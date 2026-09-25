@@ -13,6 +13,7 @@ An automated Apache Spark data engineering pipeline based on the Medallion Archi
 
 **Authors:** Kashish Fatima & Zahra Saeed  
 **Project Proposal Document:** [docs/Phase1_Proposal.pdf](docs/Phase1_Proposal.pdf)  
+**Technical Documentation:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [docs/FINOPS.md](docs/FINOPS.md)  
 **Repository:** [https://github.com/kashishfatima999/VulnPulse](https://github.com/kashishfatima999/VulnPulse)  
 
 ---
@@ -33,10 +34,10 @@ This repository and the formal proposal satisfy all six Phase 1 requirements:
 |---|---|---|
 | **1. Domain and Source Identification** | Cybersecurity vulnerability intelligence. Primary source: NIST NVD 2.0 JSON feeds and REST API. Enrichment: CISA KEV JSON catalog. Full load via yearly archives (2020-2026); incremental load via watermark-filtered REST API queries. | [Phase1_Proposal.pdf (Sections 1-4)](docs/Phase1_Proposal.pdf) |
 | **2. Data Samples and Volume** | Authentic API sample extracts for both load patterns stored in `data/`. Baseline historical volume estimated at ~132 MiB compressed; incremental updates estimated at sub-MB to low single-digit MB daily. | [`data/`](data/) and [Phase1_Proposal.pdf (Section 5)](docs/Phase1_Proposal.pdf) |
-| **3. Security and Compliance** | Identified email addresses occasionally present in NVD `sourceIdentifier`. Masking/dropping strategy defined for Silver/Gold layers with boolean retention. API credentials isolated in environment variables. | [Phase1_Proposal.pdf (Section 6)](docs/Phase1_Proposal.pdf) |
-| **4. Medallion Data Modeling** | Bronze raw ingestion with audit lineage; Silver normalized tables (`silver_cve`, `silver_affected_product`, `silver_cwe`, `silver_kev`); Gold analytical star/aggregate models. | [Phase1_Proposal.pdf (Section 7)](docs/Phase1_Proposal.pdf) |
+| **3. Security and Compliance** | Identified email addresses occasionally present in NVD `sourceIdentifier`. Masking/dropping strategy defined for Silver/Gold layers with boolean retention. API credentials isolated in environment variables. | [Phase1_Proposal.pdf (Section 6)](docs/Phase1_Proposal.pdf) and [FINOPS.md](docs/FINOPS.md) |
+| **4. Medallion Data Modeling** | Bronze raw ingestion with audit lineage; Silver normalized tables (`silver_cve`, `silver_affected_product`, `silver_cwe`, `silver_kev`); Gold analytical star/aggregate models. | [Phase1_Proposal.pdf (Section 7)](docs/Phase1_Proposal.pdf) and [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | **5. Business Intelligence and Dashboards** | Designed for Power BI. Addresses five analytical questions regarding severity evolution, vendor risk, exploit response timing, and remediation watchlists with five planned visual charts. | [Phase1_Proposal.pdf (Section 8)](docs/Phase1_Proposal.pdf) |
-| **6. Engineering Setup and FinOps** | Public GitHub repository, Databricks Free Edition guardrails, storage cap below 2.0 GB, watermark-driven compute savings, automated CI validation gate, and MIT license. | [Phase1_Proposal.pdf (Sections 9-10)](docs/Phase1_Proposal.pdf) |
+| **6. Engineering Setup and FinOps** | Public GitHub repository, Databricks Free Edition guardrails, storage cap below 2.0 GB, watermark-driven compute savings, automated CI validation gate, and MIT license. | [Phase1_Proposal.pdf (Sections 9-10)](docs/Phase1_Proposal.pdf) and [FINOPS.md](docs/FINOPS.md) |
 
 ---
 
@@ -148,7 +149,9 @@ VulnPulse/
 │   ├── nvd_incremental_load_sample.json # 10 records from 24-hr watermark query
 │   └── source_manifest.json          # Record counts, API URLs, and SHA-256 hashes
 ├── docs/
-│   └── Phase1_Proposal.pdf           # Formal Phase 1 proposal document
+│   ├── Phase1_Proposal.pdf           # Formal Phase 1 proposal document
+│   ├── ARCHITECTURE.md               # Technical Lakehouse and schema specifications
+│   └── FINOPS.md                     # Resource optimization and security guardrails
 ├── scripts/
 │   └── collect_phase1_samples.py     # Python collector to reproduce sample extracts
 ├── .gitattributes                    # Line ending normalization (LF)
