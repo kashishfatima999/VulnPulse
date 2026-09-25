@@ -1,0 +1,29 @@
+{
+  "captured_at_utc": "2026-09-25T15:26:00Z",
+  "artifacts": {
+    "nvd_full_load_sample": {
+      "file": "nvd_full_load_sample.json",
+      "source_url": "https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=10&startIndex=0",
+      "record_count": 10,
+      "sha256": "d4e1b121ec257ec72d9ef79a916a4e8cae7ac903c6a1db6a83d90f0dfc70e443"
+    },
+    "nvd_incremental_load_sample": {
+      "file": "nvd_incremental_load_sample.json",
+      "source_url": "https://services.nvd.nist.gov/rest/json/cves/2.0?lastModStartDate=2026-09-24T00:00:00.000&lastModEndDate=2026-09-25T00:00:00.000&resultsPerPage=10&startIndex=0",
+      "window_start": "2026-09-24T00:00:00.000Z",
+      "window_end": "2026-09-25T00:00:00.000Z",
+      "record_count": 10,
+      "sha256": "002aed653c924351c3d38659120453474c549dc3457908cbcfc3475843cf87d5",
+      "total_matches_in_window": 1846,
+      "window_widened": false,
+      "note": "Initial 24-hour window (2026-09-24T00:00:00Z to 2026-09-25T00:00:00Z) returned 1846 total matching records; no widening was necessary. First 10 taken per resultsPerPage=10."
+    },
+    "cisa_kev_sample": {
+      "file": "cisa_kev_sample.json",
+      "source_url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+      "record_count": 10,
+      "note": "Trimmed from the full CISA KEV catalog (1723 entries at capture time) to the first 10 entries for repository size limits.",
+      "sha256": "ec4731bd31b765bfc980b01ce7e171ff96b8a7774dd57ffe995d9e34afbaa053"
+    }
+  }
+}
