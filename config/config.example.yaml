@@ -1,0 +1,56 @@
+# VulnPulse Configuration Template
+# Copy this file to config.yaml for local development
+
+pipeline:
+  name: "VulnPulse"
+  version: "1.0.0-phase1"
+  environment: "development" # [development, staging, production]
+
+sources:
+  nvd:
+    api_base_url: "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    feeds_base_url: "https://nvd.nist.gov/feeds/json/cve/2.0"
+    api_key_env_var: "NVD_API_KEY"
+    rate_limit_delay_seconds: 0.6 # with API key; use 6.0 without API key
+    full_load:
+      baseline_start_year: 2020
+      baseline_end_year: 2026
+    incremental_load:
+      results_per_page: 2000
+      default_window_hours: 24
+      overlap_window_minutes: 10
+
+  cisa_kev:
+    catalog_url: "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+    github_mirror_url: "https://raw.githubusercontent.com/cisagov/kev-data/main/known_exploited_vulnerabilities.json"
+
+storage:
+  platform: "databricks" # [databricks, local]
+  unity_catalog:
+    catalog: "vulnpulse_catalog"
+    schema: "security_lakehouse"
+    volumes:
+      landing: "/Volumes/vulnpulse_catalog/security_lakehouse/landing"
+      checkpoints: "/Volumes/vulnpulse_catalog/security_lakehouse/checkpoints"
+  tables:
+    bronze:
+      nvd_raw: "bronze_nvd_raw"
+      cisa_raw: "bronze_cisa_raw"
+    silver:
+      cve: "silver_cve"
+      affected_product: "silver_affected_product"
+      cwe: "silver_cwe"
+      reference: "silver_reference"
+      kev: "silver_kev"
+    gold:
+      vulnerability_trends: "gold_vulnerability_trends"
+      vendor_risk: "gold_vendor_risk"
+      kev_response: "gold_kev_response"
+      cwe_trends: "gold_cwe_trends"
+      watchlist: "gold_watchlist"
+      pipeline_audit: "gold_pipeline_audit"
+
+finops:
+  max_local_storage_gb: 2.0
+  enforce_compact_silver: true
+  drop_raw_payload_in_gold: true

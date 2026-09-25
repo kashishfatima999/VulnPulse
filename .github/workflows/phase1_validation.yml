@@ -1,0 +1,104 @@
+name: Phase 1 Validation & Data Quality Gate
+
+on:
+  push:
+    branches: [ main, material-upload ]
+  pull_request:
+    branches: [ main, material-upload ]
+
+jobs:
+  validate-phase1:
+    name: Validate Samples, Provenance & Docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check Python script syntax
+        run: |
+          python -m py_compile scripts/collect_phase1_samples.py
+
+      - name: Validate Sample JSON payloads
+        run: |
+          python -c "
+          import json, glob, sys
+          files = glob.glob('data/samples/*.json') + glob.glob('data/*.json')
+          files = list(set(files))
+          print(f'Checking {len(files)} JSON files...')
+          failed = False
+          for f in files:
+              try:
+                  with open(f, 'r', encoding='utf-8') as fp:
+                      data = json.load(fp)
+                  print(f'  ✓ {f} is valid JSON')
+              except Exception as e:
+                  print(f'  ✗ {f} failed JSON parse: {e}')
+                  failed = True
+          if failed:
+              sys.exit(1)
+          "
+
+      - name: Verify SHA-256 Integrity against Manifest
+        run: |
+          python -c "
+          import json, hashlib, sys
+          from pathlib import Path
+
+          manifest_path = Path('data/samples/source_manifest.json')
+          if not manifest_path.exists():
+              manifest_path = Path('data/source_manifest.json')
+          with open(manifest_path, 'r', encoding='utf-8') as f:
+              manifest = json.load(f)
+
+          failed = False
+          for name, meta in manifest.get('artifacts', {}).items():
+              filename = meta['file']
+              expected_sha = meta['sha256']
+              candidates = [Path('data/samples') / filename, Path('data') / filename]
+              found = next((p for p in candidates if p.exists()), None)
+              if not found:
+                  print(f'  ✗ Missing artifact file: {filename}')
+                  failed = True
+                  continue
+              hasher = hashlib.sha256()
+              with open(found, 'rb') as fp:
+                  while chunk := fp.read(65536):
+                      hasher.update(chunk)
+              computed_sha = hasher.hexdigest()
+              if computed_sha == expected_sha:
+                  print(f'  ✓ {filename} SHA-256 verified: {computed_sha[:12]}...')
+              else:
+                  print(f'  ✗ {filename} SHA-256 MISMATCH! Expected {expected_sha}, got {computed_sha}')
+                  failed = True
+          if failed:
+              sys.exit(1)
+          "
+
+      - name: Verify Required Deliverables & Proposal
+        run: |
+          python -c "
+          import os, sys
+          required_files = [
+              'README.md',
+              'LICENSE',
+              '.gitignore',
+              'config/config.example.yaml',
+              'docs/Phase1_Proposal.pdf',
+              'docs/ARCHITECTURE.md',
+              'docs/DATA_SOURCES.md',
+              'docs/PII_FINOPS.md',
+              'docs/PHASE1_CHECKLIST.md',
+              'scripts/collect_phase1_samples.py'
+          ]
+          missing = [f for f in required_files if not os.path.exists(f)]
+          if missing:
+              print('✗ Missing required files:', missing)
+              sys.exit(1)
+          print(f'✓ All {len(required_files)} project deliverables are present!')
+          "

@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Enforce LF for JSON and YAML to maintain deterministic SHA-256 hashes across Linux and Windows
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.py text eol=lf
+*.md text eol=lf
