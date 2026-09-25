@@ -92,6 +92,8 @@ jobs:
               '.gitignore',
               '.gitattributes',
               'docs/Phase1_Proposal.pdf',
+              'docs/ARCHITECTURE.md',
+              'docs/FINOPS.md',
               'data/nvd_full_load_sample.json',
               'data/nvd_incremental_load_sample.json',
               'data/cisa_kev_sample.json',
