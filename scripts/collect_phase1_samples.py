@@ -2,7 +2,7 @@
 """
 VulnPulse - Phase 1 Sample Data Collector
 Fetches authentic raw sample records from NVD CVE API 2.0 and CISA KEV feeds,
-computes their SHA-256 digests, and updates the provenance source_manifest.json.
+computes their SHA-256 digests, and updates source_manifest.json.
 
 Usage:
     python scripts/collect_phase1_samples.py
@@ -20,8 +20,7 @@ import urllib.error
 # Resolve paths
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
-SAMPLES_DIR = DATA_DIR / "samples"
-SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 NVD_API_KEY = os.environ.get("NVD_API_KEY")
 
@@ -60,9 +59,10 @@ def main():
     print(f"  [1/3] Fetching NVD Full Load sample from: {full_url}")
     try:
         full_data = fetch_json(full_url, headers=headers)
-        full_sample_path = SAMPLES_DIR / "nvd_full_load_sample.json"
-        with open(full_sample_path, "w", encoding="utf-8") as f:
+        full_sample_path = DATA_DIR / "nvd_full_load_sample.json"
+        with open(full_sample_path, "w", encoding="utf-8", newline="\n") as f:
             json.dump(full_data, f, indent=2)
+            f.write("\n")
         full_sha256 = compute_sha256(full_sample_path)
         manifest_artifacts["nvd_full_load_sample"] = {
             "file": "nvd_full_load_sample.json",
@@ -70,9 +70,9 @@ def main():
             "record_count": len(full_data.get("vulnerabilities", [])),
             "sha256": full_sha256,
         }
-        print(f"      ✓ Saved {full_sample_path.name} (SHA-256: {full_sha256[:12]}...)")
+        print(f"      Saved {full_sample_path.name} (SHA-256: {full_sha256[:12]}...)")
     except Exception as e:
-        print(f"      ! Warning: Could not fetch NVD full load sample: {e}")
+        print(f"      Warning: Could not fetch NVD full load sample: {e}")
 
     # 2. NVD Incremental Load Sample (24-hour modified window, 10 records)
     window_end = now_utc.strftime("%Y-%m-%dT%H:%M:%S.000")
@@ -84,9 +84,10 @@ def main():
     print(f"  [2/3] Fetching NVD Incremental Load sample from: {inc_url}")
     try:
         inc_data = fetch_json(inc_url, headers=headers)
-        inc_sample_path = SAMPLES_DIR / "nvd_incremental_load_sample.json"
-        with open(inc_sample_path, "w", encoding="utf-8") as f:
+        inc_sample_path = DATA_DIR / "nvd_incremental_load_sample.json"
+        with open(inc_sample_path, "w", encoding="utf-8", newline="\n") as f:
             json.dump(inc_data, f, indent=2)
+            f.write("\n")
         inc_sha256 = compute_sha256(inc_sample_path)
         manifest_artifacts["nvd_incremental_load_sample"] = {
             "file": "nvd_incremental_load_sample.json",
@@ -98,9 +99,9 @@ def main():
             "total_matches_in_window": inc_data.get("totalResults", 0),
             "window_widened": False,
         }
-        print(f"      ✓ Saved {inc_sample_path.name} (SHA-256: {inc_sha256[:12]}...)")
+        print(f"      Saved {inc_sample_path.name} (SHA-256: {inc_sha256[:12]}...)")
     except Exception as e:
-        print(f"      ! Warning: Could not fetch NVD incremental sample: {e}")
+        print(f"      Warning: Could not fetch NVD incremental sample: {e}")
 
     # 3. CISA KEV Sample (Trimmed to 10 records)
     cisa_url = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
@@ -108,13 +109,13 @@ def main():
     try:
         cisa_data = fetch_json(cisa_url)
         cisa_full_count = len(cisa_data.get("vulnerabilities", []))
-        # Keep only the first 10 entries for sample size limits
         cisa_data["vulnerabilities"] = cisa_data.get("vulnerabilities", [])[:10]
         cisa_data["count"] = len(cisa_data["vulnerabilities"])
 
-        cisa_sample_path = SAMPLES_DIR / "cisa_kev_sample.json"
-        with open(cisa_sample_path, "w", encoding="utf-8") as f:
+        cisa_sample_path = DATA_DIR / "cisa_kev_sample.json"
+        with open(cisa_sample_path, "w", encoding="utf-8", newline="\n") as f:
             json.dump(cisa_data, f, indent=2)
+            f.write("\n")
         cisa_sha256 = compute_sha256(cisa_sample_path)
         manifest_artifacts["cisa_kev_sample"] = {
             "file": "cisa_kev_sample.json",
@@ -123,9 +124,9 @@ def main():
             "note": f"Trimmed from the full CISA KEV catalog ({cisa_full_count} entries at capture time) to first 10 records.",
             "sha256": cisa_sha256,
         }
-        print(f"      ✓ Saved {cisa_sample_path.name} (SHA-256: {cisa_sha256[:12]}...)")
+        print(f"      Saved {cisa_sample_path.name} (SHA-256: {cisa_sha256[:12]}...)")
     except Exception as e:
-        print(f"      ! Warning: Could not fetch CISA KEV sample: {e}")
+        print(f"      Warning: Could not fetch CISA KEV sample: {e}")
 
     # Write manifest if any succeeded
     if manifest_artifacts:
@@ -133,10 +134,11 @@ def main():
             "captured_at_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "artifacts": manifest_artifacts,
         }
-        manifest_path = SAMPLES_DIR / "source_manifest.json"
-        with open(manifest_path, "w", encoding="utf-8") as f:
+        manifest_path = DATA_DIR / "source_manifest.json"
+        with open(manifest_path, "w", encoding="utf-8", newline="\n") as f:
             json.dump(manifest, f, indent=2)
-        print(f"  ✓ Updated {manifest_path.name}")
+            f.write("\n")
+        print(f"  Saved {manifest_path.name}")
         print("\nAll sample payloads collected successfully.")
 
 
