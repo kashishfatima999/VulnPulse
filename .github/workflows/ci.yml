@@ -1,0 +1,88 @@
+# VulnPulse continuous integration.
+#
+# Runs on every pull request and on every push to main. Three independent jobs:
+#   lint            - ruff style and error checks on all Python (src, tests, scripts, notebooks)
+#   test            - pytest with a local PySpark session against the tiny samples in data/
+#   data-integrity  - the Phase 1 samples still parse and still match their SHA-256 manifest
+#
+# Deployment to Databricks is NOT done here. The Databricks Git folder pulls `main`
+# after a PR is merged, which is the "CD" step for this project (see docs/).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to the same branch cancels the run that is still going for the old commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in line with the Python version of the Databricks serverless environment you use.
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Ruff lint
+        run: ruff check . --output-format=github
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+  test:
+    name: Unit tests (pytest + local PySpark)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Local PySpark 4.x needs a JDK 17 or newer on the runner.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest
+
+  data-integrity:
+    name: Sample data integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Validate sample payloads against source_manifest.json
+        run: python scripts/validate_samples.py

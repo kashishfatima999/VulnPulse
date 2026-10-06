@@ -64,3 +64,8 @@ data/gold/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Test / lint caches and local Spark artefacts
+.pytest_cache/
+.ruff_cache/
+spark-warehouse/
