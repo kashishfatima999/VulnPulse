@@ -14,8 +14,13 @@ target-version = "py311"
 # Add "I" (import sorting) and "UP" (modern syntax) later once the codebase is formatted.
 select = ["E4", "E7", "E9", "F", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# Databricks notebooks use the injected globals spark, dbutils and display.
+"notebooks/*" = ["F821"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 addopts = "-ra --strict-markers"
 markers = [
   "spark: tests that start a local SparkSession (slower; skip with -m 'not spark')",

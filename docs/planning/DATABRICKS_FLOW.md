@@ -45,7 +45,7 @@ CREATE VOLUME IF NOT EXISTS workspace.vulnpulse_bronze.landing;
 | `workspace.vulnpulse_bronze.bronze_nvd_raw` | Raw NVD pages, one row per file or API page |
 | `workspace.vulnpulse_bronze.bronze_cisa_raw` | Raw KEV snapshots |
 | `workspace.vulnpulse_silver.*` | Zahra's tables (created by her DDL module, called from the same setup notebook) |
-| `workspace.vulnpulse_gold.gold_pipeline_audit` | Run audit + watermark. Both of you append to it |
+| `workspace.vulnpulse_gold.pipeline_execution_logs` | Run audit + watermark. Both of you append to it |
 
 NVD API key: optional (it only raises the rate limit). If you use one, store it as a Databricks
 secret or pass it as a job parameter. It never appears in code or in Git.
@@ -66,7 +66,8 @@ pytest locally                                          run notebooks/01_bronze_
 Notebook `01_bronze_nvd.py` is thin, about 30 lines:
 
 1. `dbutils.widgets` for `load_type`, `year`, `start_date`, `end_date`, `batch_id`.
-2. `from vulnpulse.ingestion ... import ...` (the Git folder root is on `sys.path`).
+2. Add `../src` to `sys.path` (same three lines as in `00_setup_catalog.py`), then
+   `from vulnpulse.ingestion ... import ...`.
 3. Call the reader, call the Bronze writer, call the audit writer.
 4. `display()` the audit row and `SELECT count(*)` from the Bronze table.
 

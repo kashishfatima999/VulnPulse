@@ -1,5 +1,8 @@
 # Phase 2 Work Division
 
+> **Deadline: Phase 2 is due 10 October 2026.** Phase 3 (Gold + dashboard) is due 24 October 2026.
+> Source: `docs/requirements/phase2.txt`.
+
 Two-person split for the Phase 2 pipeline (ingestion, Bronze, Silver, audit, tests).
 Phase 1 design is approved and unchanged: table names and column names below come from
 [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md).
@@ -27,17 +30,17 @@ drift + quarantine). Re-balance only if one side is clearly idle.
 | 1 Bronze | NVD full-load reader (yearly `nvdcve-2.0-YYYY.json.gz` feeds, 2020-2026) | Kashish | schemas | Function: year -> landing file -> DataFrame | `src/vulnpulse/ingestion/nvd_full.py` |
 | 1 Bronze | NVD incremental reader (API 2.0, `lastModStartDate`/`lastModEndDate`, pagination, retry, optional API key from secret) | Kashish | schemas | Function: (start, end) -> DataFrame + page count | `src/vulnpulse/ingestion/nvd_incremental.py` |
 | 1 Bronze | CISA KEV snapshot reader | Kashish | schemas | Function: -> DataFrame + catalogVersion | `src/vulnpulse/ingestion/kev.py` |
-| 1 Bronze | Bronze writer: append raw payload rows with `batch_id`, `load_type`, `source_uri`, `ingested_at` (UTC), `payload_sha256`, `raw_json` | Kashish | readers | `bronze_nvd_raw`, `bronze_cisa_raw` Delta tables | `src/vulnpulse/bronze/writer.py` |
+| 1 Bronze | Bronze writer: append raw payload rows with `batch_id`, `load_type`, `source_uri`, `load_timestamp` (UTC), `payload_sha256`, `raw_json` | Kashish | readers | `bronze_nvd_raw`, `bronze_cisa_raw` Delta tables | `src/vulnpulse/bronze/writer.py` |
 | 1 Bronze | Parameterisation: `load_type` (FULL / INCREMENTAL / BACKFILL), `start_date`, `end_date`, `year`, `batch_id` via notebook widgets / job parameters | Kashish | writer | Same notebook runs any mode without code edits | `notebooks/01_bronze_nvd.py`, `src/vulnpulse/utils/params.py` |
-| 1 Bronze | Watermark: read last successful `max(lastModified)`, apply 10-minute overlap, write new watermark only on success | Kashish | writer | `watermark` table or rows in `gold_pipeline_audit` | `src/vulnpulse/utils/watermark.py` |
-| 1 Bronze | File-level audit: one row per run with source, load_type, start/end time, status, records_read, records_written, error | Kashish | writer | `gold_pipeline_audit` rows for every Bronze run | `src/vulnpulse/audit/run_audit.py` |
+| 1 Bronze | Watermark: read last successful `max(lastModified)`, apply 10-minute overlap, write new watermark only on success | Kashish | writer | `watermark` table or rows in `pipeline_execution_logs` | `src/vulnpulse/utils/watermark.py` |
+| 1 Bronze | File-level audit: one row per run with source, load_type, start/end time, status, records_read, records_written, error | Kashish | writer | `pipeline_execution_logs` rows for every Bronze run | `src/vulnpulse/audit/run_audit.py` |
 | 1 Bronze | Bronze tests: schema matches samples, metadata columns never null, sha256 stable, watermark advances, re-run of same batch is detectable | Kashish | all above | pytest green locally and in CI | `tests/test_bronze_*.py` |
 | 2 Silver | Silver table DDL with explicit types and keys: `silver_cve`, `silver_affected_product`, `silver_cwe`, `silver_reference`, `silver_kev` | Zahra | none (uses ARCHITECTURE.md) | Empty Delta tables created idempotently | `src/vulnpulse/silver/ddl.py`, `notebooks/00_setup_catalog.py` (Silver section) |
 | 2 Silver | Flatten `raw_json` -> typed columns using the Bronze schema; English description, CVSS v3.1/v3.0 fallback, severity, CPE vendor/product parsing | Zahra | Bronze schema module (can mock Bronze from `data/` samples) | Pure transformation functions, DataFrame in -> DataFrame out | `src/vulnpulse/silver/transform.py` |
 | 2 Silver | PII rule: drop `sourceIdentifier`, keep `has_source_identifier` boolean | Zahra | transform | Covered by a unit test | `src/vulnpulse/silver/transform.py` |
 | 2 Silver | Deduplicate per `cve_id` keeping latest `last_modified_at`, then `MERGE INTO` each Silver table | Zahra | transform | Same Bronze batch processed twice yields identical Silver | `src/vulnpulse/silver/merge.py` |
 | 2 Silver | Schema drift: compatible casts (e.g. `"9.8"` -> double), unknown extra fields ignored and logged, missing required fields -> quarantine | Zahra | merge | `silver_quarantine` table with reason column; batch never aborts on a bad row | `src/vulnpulse/silver/quality.py` |
-| 2 Silver | Row-level audit: inserted, updated, rejected, quarantined counts per batch | Zahra | merge | Rows appended to `gold_pipeline_audit` | `src/vulnpulse/audit/merge_audit.py` |
+| 2 Silver | Row-level audit: inserted, updated, rejected, quarantined counts per batch | Zahra | merge | Rows appended to `pipeline_execution_logs` | `src/vulnpulse/audit/merge_audit.py` |
 | 2 Silver | Silver tests: casting, dedup, MERGE update path, quarantine path, drift does not kill batch | Zahra | all above | pytest green locally and in CI | `tests/test_silver_*.py` |
 | 3 Integrate | End-to-end run on tiny data: NVD sample -> Bronze -> Silver | Both | Bronze + Silver done | Screenshots / audit rows as evidence | `notebooks/01_bronze_nvd.py`, `notebooks/03_silver.py` |
 | 3 Integrate | Failure drills: duplicate batch, bad type, missing column, extra column, invalid CVSS, re-run after failure | Both | integration | Table of drill -> expected -> observed in docs | `docs/EVIDENCE.md` |
