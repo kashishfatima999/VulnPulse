@@ -1,0 +1,5 @@
+# Development and CI dependencies only. Databricks provides Spark at runtime;
+# pyspark is installed here so unit tests can run a local SparkSession.
+pyspark>=4.0,<5
+pytest>=8.0
+ruff>=0.6

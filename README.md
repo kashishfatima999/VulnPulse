@@ -2,7 +2,7 @@
 
 An automated Apache Spark data engineering pipeline based on the Medallion Architecture (Lakehouse), ingesting and normalizing vulnerability intelligence from the National Vulnerability Database (NVD) and CISA Known Exploited Vulnerabilities (KEV) catalog.
 
-[![Phase 1 Validation](https://github.com/kashishfatima999/VulnPulse/actions/workflows/phase1_validation.yml/badge.svg)](https://github.com/kashishfatima999/VulnPulse/actions/workflows/phase1_validation.yml)
+[![CI](https://github.com/kashishfatima999/VulnPulse/actions/workflows/ci.yml/badge.svg)](https://github.com/kashishfatima999/VulnPulse/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Databricks%20Free%20Edition-red)](https://databricks.com/)
 [![Engine](https://img.shields.io/badge/Engine-Apache%20Spark%203.x-orange)](https://spark.apache.org/)
@@ -141,7 +141,7 @@ The pipeline is designed to operate safely within Databricks Free Edition quotas
 VulnPulse/
 ├── .github/
 │   └── workflows/
-│       └── phase1_validation.yml     # Automated CI data and deliverable validation
+│       └── ci.yml                    # CI: ruff lint, pytest (local PySpark), sample-data integrity
 ├── data/
 │   ├── README.md                     # Sample data documentation and rationale
 │   ├── cisa_kev_sample.json          # 10 authentic CISA KEV catalog records
@@ -153,9 +153,15 @@ VulnPulse/
 │   ├── ARCHITECTURE.md               # Technical Lakehouse and schema specifications
 │   └── FINOPS.md                     # Resource optimization and security guardrails
 ├── scripts/
-│   └── collect_phase1_samples.py     # Python collector to reproduce sample extracts
+│   ├── collect_phase1_samples.py     # Python collector to reproduce sample extracts
+│   └── validate_samples.py           # Verifies samples against source_manifest.json (used by CI)
+├── tests/
+│   ├── conftest.py                   # Shared pytest fixtures (local SparkSession)
+│   └── test_sample_payloads.py       # Shape and explicit-schema tests on the samples
 ├── .gitattributes                    # Line ending normalization (LF)
 ├── .gitignore                        # Git exclusion rules for large datasets and caches
+├── pyproject.toml                    # Project metadata, ruff and pytest configuration
+├── requirements-dev.txt              # Dev/CI dependencies (pyspark, pytest, ruff)
 ├── LICENSE                           # MIT License
 └── README.md                         # Project documentation and landing page
 ```

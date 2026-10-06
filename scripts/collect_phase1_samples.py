@@ -9,13 +9,11 @@ Usage:
 """
 
 import os
-import sys
 import json
 import hashlib
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import urllib.request
-import urllib.error
 
 # Resolve paths
 REPO_ROOT = Path(__file__).resolve().parent.parent
