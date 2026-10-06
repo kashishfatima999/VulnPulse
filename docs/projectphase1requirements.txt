@@ -1,0 +1,34 @@
+Context & Objective
+In modern enterprise data engineering, analytical systems are no longer built using simple single-machine scripts. Organizations rely on distributed processing and the Medallion Architecture (Lakehouse) to ensure data quality, scalability, and performance.
+
+For your semester project, you will act as a Data Engineering team. Your objective is to design and build an end-to-end, automated data pipeline using Apache Spark (via Databricks Community Edition or Azure). The pipeline will ingest real-world data, process it through Bronze, Silver, and Gold layers, and culminate in a business intelligence dashboard.
+
+You will work in groups of two. The project is divided into three phases. Below are the requirements for your Phase 1.
+
+Phase 1 Deliverables & Requirements
+Your team must submit a formal project proposal document and a link to your project's GitHub repository. Your submission must address the following requirements in detail:
+
+1. Domain & Source Identification
+Project Concept: Briefly describe the domain you have chosen (e.g., e-commerce, financial markets, open-source repository analytics, real estate listings).
+Data Source: Provide the exact reference to your data source (e.g., a specific REST API, a website you will scrape, or an automated data dump).
+Ingestion Pattern: The data source must support both load types:
+Full Load: The ability to extract a large historical baseline dataset.
+Incremental Load: The ability to fetch new, updated, or deleted records periodically (e.g., daily stock prices, new GitHub commits, new property listings).
+2. Data Samples & Volume
+Sample Files: You must acquire and provide sample raw data files representing both a "Full Load" payload and a subsequent "Incremental Load" payload.
+Volume & Frequency Estimation: Estimate the size of your data. What is the expected file size (in MB/GB) of your initial full load? What is the expected volume of your daily/weekly incremental loads? (This ensures your dataset is robust enough for Spark, but manageable within free-tier cloud limits).
+3. Security & Compliance
+Identify PII and Sensitive Data: Carefully analyze your raw data samples. Explicitly document whether the data contains Personally Identifiable Information (PII) such as names, email addresses, exact IP addresses, or financial details.
+Handling Strategy: Propose a high-level strategy for how you will handle this data (e.g., hashing, masking, or dropping specific columns before it reaches the Silver layer). If your data contains no PII, explicitly state and justify this.
+4. High-Level Medallion Data Modeling
+Bronze & Silver Layers: Explain how you intend to process the raw data. What major cleaning, formatting, or casting steps will be required to move the data from Bronze (raw) to Silver (cleansed)? Provide a high-level overview of your planned Silver data model.
+Gold Layer: Describe how you intend to model the data in the Gold layer to serve business analysts. What specific aggregations, dimensional models, or consolidated tables will you create?
+5. Business Intelligence & Dashboards
+Visual Insights: Provide a high-level outline of the final dashboard you intend to build (in Power BI, Tableau, etc.). What specific business questions will this dashboard answer? Describe 2-3 specific visual charts or metrics you plan to deliver.
+6. Engineering Setup & FinOps
+Version Control: Create a GitHub repository for your project. Your Phase 1 submission must include the repository link, and your sample data files should be pushed to this repository.
+Cost / FinOps Awareness: Acknowledge the infrastructure you plan to use (e.g., Databricks Free Edition or Azure for Students). Briefly discuss how you will manage your data volume and pipeline testing to ensure you do not exhaust your free compute credits or storage limits.
+Due dates for Phase 2 & 3 will be as follows:
+Phase 2: 10 Oct 2026
+Phase 3: 24 Oct 2026
+Requirements for Phase 2 and 3 will be shared separately.
