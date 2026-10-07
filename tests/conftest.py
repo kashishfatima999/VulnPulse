@@ -1,8 +1,15 @@
 """Shared pytest fixtures for VulnPulse."""
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
+
+# Spark launches Python workers with the "python3" command. On Windows that can resolve to the
+# Microsoft Store stub and the worker never connects back. Pin it to the interpreter running pytest.
+os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "data"
