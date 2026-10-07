@@ -137,33 +137,66 @@ The pipeline is designed to operate safely within Databricks Free Edition quotas
 
 ## Repository Structure
 
+Only files under `notebooks/` are ever executed. Everything else is imported by them, tested by CI,
+or read by people.
+
 ```text
 VulnPulse/
-├── .github/
-│   └── workflows/
-│       └── ci.yml                    # CI: ruff lint, pytest (local PySpark), sample-data integrity
-├── data/
-│   ├── README.md                     # Sample data documentation and rationale
-│   ├── cisa_kev_sample.json          # 10 authentic CISA KEV catalog records
-│   ├── nvd_full_load_sample.json     # 10 records from NVD baseline feed
-│   ├── nvd_incremental_load_sample.json # 10 records from 24-hr watermark query
-│   └── source_manifest.json          # Record counts, API URLs, and SHA-256 hashes
+├── .github/workflows/
+│   └── ci.yml                        # CI on every PR: ruff lint, pytest (local PySpark), sample integrity
+├── notebooks/                        # Thin Databricks notebooks (source format). RUN THESE.
+│   ├── 00_setup_catalog.py           # Once: creates vulnpulse_bronze/silver/gold schemas + landing volume
+│   └── 01_bronze_nvd.py              # Raw-to-Bronze runner: FULL / INCREMENTAL / BACKFILL via widgets
+├── src/vulnpulse/                    # Production code, imported by notebooks and tests. Never run directly.
+│   ├── schemas/
+│   │   ├── nvd.py                    # Explicit StructTypes for NVD pages (raw envelope) and typed CVE records
+│   │   └── kev.py                    # Explicit StructTypes for the CISA KEV catalog and records
+│   ├── bronze/
+│   │   └── nvd.py                    # Read NVD files, one row per CVE, attach metadata, append to Delta
+│   ├── audit/
+│   │   └── execution_log.py          # pipeline_execution_logs table: one row per run per layer
+│   └── utils/
+│       └── params.py                 # Validated run parameters (load_type, dates, batch_id, catalog)
+├── tests/                            # pytest suite; run locally and in CI, never in Databricks
+│   ├── conftest.py                   # Local SparkSession fixture, sample data path
+│   ├── test_bronze_nvd.py            # Raw preservation, Bronze schema, hash stability, typed parse
+│   ├── test_schemas_kev.py           # KEV envelope + typed record schema
+│   ├── test_params_and_log.py        # Parameter validation, execution-log row construction
+│   └── test_sample_payloads.py       # Phase 1 sample shape checks
+├── scripts/                          # Phase 1 tooling, used by CI only
+│   ├── collect_phase1_samples.py     # Re-fetches the ten-record samples from NVD/CISA
+│   └── validate_samples.py           # Verifies samples against source_manifest.json
+├── data/                             # Ten-record real samples (<100 KB). No full datasets, ever.
+│   ├── nvd_full_load_sample.json
+│   ├── nvd_incremental_load_sample.json
+│   ├── cisa_kev_sample.json
+│   ├── source_manifest.json          # Capture URLs, timestamps, record counts, SHA-256 digests
+│   └── README.md
 ├── docs/
-│   ├── 24L-2605&24L-2512-VulnPulse_Phase1_Proposal.pdf # Formal Phase 1 proposal document
-│   ├── ARCHITECTURE.md               # Technical Lakehouse and schema specifications
-│   └── FINOPS.md                     # Resource optimization and security guardrails
-├── scripts/
-│   ├── collect_phase1_samples.py     # Python collector to reproduce sample extracts
-│   └── validate_samples.py           # Verifies samples against source_manifest.json (used by CI)
-├── tests/
-│   ├── conftest.py                   # Shared pytest fixtures (local SparkSession)
-│   └── test_sample_payloads.py       # Shape and explicit-schema tests on the samples
-├── .gitattributes                    # Line ending normalization (LF)
-├── .gitignore                        # Git exclusion rules for large datasets and caches
+│   ├── 24L-2605&24L-2512-VulnPulse_Phase1_Proposal.pdf   # Approved Phase 1 proposal
+│   ├── ARCHITECTURE.md               # Lakehouse design and table specifications
+│   ├── FINOPS.md                     # Free Edition quota, storage and testing guardrails
+│   ├── requirements/                 # Teacher's requirement texts (phase1.txt, phase2.txt)
+│   └── planning/                     # Work division and Databricks runbook
+├── PROJECT_CONTRACT.md               # The rubric as hard rules. Paste into every AI prompt.
 ├── pyproject.toml                    # Project metadata, ruff and pytest configuration
-├── requirements-dev.txt              # Dev/CI dependencies (pyspark, pytest, ruff)
-├── LICENSE                           # MIT License
-└── README.md                         # Project documentation and landing page
+├── requirements-dev.txt              # Dev/CI dependencies: pyspark, pytest, ruff
+├── .gitattributes                    # LF line endings so SHA-256 digests match across OSes
+├── .gitignore                        # Excludes data dumps, Delta/Parquet, venvs, caches, secrets
+├── LICENSE                           # MIT
+└── README.md
+```
+
+### How the pieces connect
+
+```text
+GitHub (source of truth)
+   │  pull
+   ▼
+Databricks Git folder ──► notebooks/01_bronze_nvd.py ──imports──► src/vulnpulse/*
+                                     │
+                                     ├──► workspace.vulnpulse_bronze.bronze_nvd_raw   (Delta, append-only)
+                                     └──► workspace.vulnpulse_gold.pipeline_execution_logs
 ```
 
 ---
