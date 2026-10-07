@@ -9,6 +9,10 @@ license = { file = "LICENSE" }
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.format]
+# Databricks rewrites notebook files on save (drops the final newline). Lint them, don't format them.
+exclude = ["notebooks/*"]
+
 [tool.ruff.lint]
 # Default pyflakes/pycodestyle errors plus bugbear (common runtime mistakes).
 # Add "I" (import sorting) and "UP" (modern syntax) later once the codebase is formatted.
