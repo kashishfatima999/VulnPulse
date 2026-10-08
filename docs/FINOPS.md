@@ -51,13 +51,14 @@ To prevent accidental consumption of free compute credits during development and
 Incremental ingestion requires tracking the high-water mark to ensure exactly-once or at-least-once ingestion with deduplication.
 
 ### 3.1 Watermark Query Pattern
-1. Read the maximum `watermark_timestamp` from `gold_pipeline_audit`. If empty, default to baseline end date.
+1. Read `max(watermark_ts)` for `nvd_cve_api` from `pipeline_watermarks`. If empty (first run), use the `start_date` seed parameter when given, otherwise the last 24 hours.
 2. Set `lastModStartDate = watermark_timestamp - INTERVAL 10 MINUTES` (safety buffer for clock drift and in-flight commits).
 3. Set `lastModEndDate = CURRENT_TIMESTAMP_UTC`.
 4. Fetch paginated records from `https://services.nvd.nist.gov/rest/json/cves/2.0`.
 5. Append newly fetched records into Bronze.
 6. In Silver, merge incoming records into `silver_cve` using `MERGE INTO` on `cve_id` when `source.last_modified_at > target.last_modified_at`.
-7. Update `gold_pipeline_audit` with the new maximum `last_modified_at` encountered.
+7. Only after the Bronze append succeeded, append the new maximum `lastModified` to `pipeline_watermarks`. BACKFILL runs (explicit `start_date`/`end_date`) skip this step and never move the watermark.
+8. Delete the landed page files from the volume. Write one row to `pipeline_execution_logs` whether the run succeeded or failed.
 
 ---
 
