@@ -69,3 +69,6 @@ Desktop.ini
 .pytest_cache/
 .ruff_cache/
 spark-warehouse/
+
+# Local landing folder written by scripts/fetch_*.py (uploaded to the volume, never committed)
+landing/

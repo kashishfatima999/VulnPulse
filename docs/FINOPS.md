@@ -8,6 +8,12 @@ This document defines resource optimization constraints, operational cost manage
 
 The project operates under Databricks Free Edition / Azure for Students limits. The platform provides serverless compute with strict core hour quotas and limited persistent storage.
 
+**Verified constraint (8 Oct 2026): Free Edition serverless has no outbound internet.** DNS for
+`services.nvd.nist.gov` and `www.cisa.gov` fails (`gaierror -2`); only PyPI resolves. Consequence: all
+source acquisition runs on a laptop (`scripts/fetch_nvd.py`, `scripts/fetch_kev.py`) and the result is
+uploaded to the landing volume. Notebooks never call the network. Side benefit: no serverless compute
+is spent waiting on the NVD public API, which pauses ~7 s between pages without a key.
+
 ### 1.1 Compute Optimization
 1. **Incremental Processing vs Full Recomputations:**
    - The historical baseline (2020-2026, ~131.5 MiB compressed) is loaded once during initialization.
@@ -51,13 +57,14 @@ To prevent accidental consumption of free compute credits during development and
 Incremental ingestion requires tracking the high-water mark to ensure exactly-once or at-least-once ingestion with deduplication.
 
 ### 3.1 Watermark Query Pattern
-1. Read the maximum `watermark_timestamp` from `gold_pipeline_audit`. If empty, default to baseline end date.
+1. Read `max(watermark_ts)` for `nvd_cve_api` from `pipeline_watermarks`. If empty (first run), use the `start_date` seed parameter when given, otherwise the last 24 hours.
 2. Set `lastModStartDate = watermark_timestamp - INTERVAL 10 MINUTES` (safety buffer for clock drift and in-flight commits).
 3. Set `lastModEndDate = CURRENT_TIMESTAMP_UTC`.
-4. Fetch paginated records from `https://services.nvd.nist.gov/rest/json/cves/2.0`.
-5. Append newly fetched records into Bronze.
+4. On the laptop, `scripts/fetch_nvd.py --start <watermark - 10 min>` fetches the paginated pages into `landing/nvd/<batch_id>/` with a `manifest.json` (window, load type, source URL). The folder is uploaded to the landing volume.
+5. `01_bronze_nvd.py` with `load_type=INCREMENTAL` reads the manifest, appends the pages to Bronze, and warns if the manifest window starts after the stored watermark (a gap).
 6. In Silver, merge incoming records into `silver_cve` using `MERGE INTO` on `cve_id` when `source.last_modified_at > target.last_modified_at`.
-7. Update `gold_pipeline_audit` with the new maximum `last_modified_at` encountered.
+7. Only after the Bronze append succeeded, append the new maximum `lastModified` to `pipeline_watermarks`. BACKFILL runs (explicit `start_date`/`end_date`) skip this step and never move the watermark.
+8. Delete the landed page files from the volume. Write one row to `pipeline_execution_logs` whether the run succeeded or failed.
 
 ---
 

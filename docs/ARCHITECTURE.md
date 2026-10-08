@@ -30,7 +30,7 @@ flowchart TD
         G_Vendor["gold_vendor_risk<br/>Vendor exposure, critical counts, and KEV exploit ratios"]
         G_KEV_Resp["gold_kev_response<br/>Days to KEV inclusion distribution metrics"]
         G_Watch["gold_watchlist<br/>High-priority actionable vulnerability view"]
-        G_Audit["gold_pipeline_audit<br/>Pipeline observability, watermarks, and batch telemetry"]
+        G_Audit["pipeline_execution_logs + pipeline_watermarks<br/>Run audit per layer, incremental state"]
     end
 
     subgraph Presentation ["Presentation Layer"]
@@ -63,33 +63,75 @@ flowchart TD
 
 ## 1. Bronze Layer (Raw Storage)
 
-The Bronze layer preserves raw JSON payloads without schema alteration, appending operational lineage fields.
+The Bronze layer preserves every source record **verbatim** and appends ingestion lineage. It is
+append-only: nothing in Bronze is ever updated or deleted, so any Silver state can be rebuilt from it.
 
-### `bronze_nvd_raw`
-- **Grain:** One row per raw payload file or API response page.
-- **Format:** Delta Lake.
-- **Schema:**
-  - `batch_id` (StringType): Unique identifier for ingestion run (UUID).
-  - `load_type` (StringType): `FULL` or `INCREMENTAL`.
-  - `source_uri` (StringType): URL or source filename.
-  - `ingested_at` (TimestampType): UTC timestamp of landing.
-  - `payload_sha256` (StringType): Hex digest of the payload.
-  - `raw_json` (StringType): Complete unparsed JSON string.
+**Implementation note (Phase 2).** The Phase 1 proposal described Bronze as one row per API page or
+feed file. The implemented grain is **one row per source record**. Reason: a yearly NVD feed is a
+single 50 MB JSON object; storing it as one row forces Silver to parse one giant string in one task
+and gives `MERGE` no natural key. Per-record rows keep raw preservation, give Silver a key
+(`cve_id`), and let the watermark be computed from a plain column. Everything else in the approved
+design is unchanged.
 
-### `bronze_cisa_raw`
-- **Grain:** One row per snapshot capture of the CISA KEV catalog.
-- **Format:** Delta Lake.
-- **Schema:**
-  - `batch_id` (StringType): Ingestion run identifier.
-  - `catalog_version` (StringType): Version reported by CISA (e.g., `2026.09.24`).
-  - `ingested_at` (TimestampType): UTC timestamp of capture.
-  - `raw_json` (StringType): Complete JSON payload.
+**How raw preservation and explicit schemas coexist.** Files are read with an explicit
+`StructType` (`NVD_PAGE_RAW_SCHEMA`, `KEV_CATALOG_RAW_SCHEMA`) in which the page envelope is typed
+and each record field is declared `StringType`. Spark's JSON reader copies an object into a
+`StringType` field as its JSON text, so every source key survives, including ones the typed schema
+does not model yet. Schema inference is never used.
+
+### `bronze_nvd_raw` (`workspace.vulnpulse_bronze`)
+- **Grain:** One row per CVE record per batch.
+- **Primary key:** (`cve_id`, `batch_id`).
+- **Format:** Delta Lake, append-only.
+
+| Column | Type | Description |
+|---|---|---|
+| `cve_id` | STRING, not null | `$.id` lifted from the record for keys and filters |
+| `source_last_modified` | STRING | `$.lastModified` as emitted by NVD; drives the watermark. Cast in Silver |
+| `raw_json` | STRING, not null | The complete CVE object exactly as received |
+| `payload_sha256` | STRING, not null | SHA-256 of `raw_json`; identical input yields identical hash |
+| `source_uri` | STRING, not null | Feed file path or the API request URL for the window |
+| `load_type` | STRING, not null | `FULL`, `INCREMENTAL` or `BACKFILL` |
+| `batch_id` | STRING, not null | Run identifier, time-prefixed (`20261009T101500Z-ab12cd34`) |
+| `load_timestamp` | TIMESTAMP, not null | UTC instant the batch started; same for every row of a batch |
+
+### `bronze_cisa_raw` (`workspace.vulnpulse_bronze`)
+- **Grain:** One row per KEV catalog entry per snapshot.
+- **Primary key:** (`cve_id`, `batch_id`).
+- **Format:** Delta Lake, append-only. Every run is a FULL snapshot; CISA offers no incremental API.
+
+| Column | Type | Description |
+|---|---|---|
+| `cve_id` | STRING, not null | `$.cveID` lifted from the entry |
+| `catalog_version` | STRING | CISA catalog version, e.g. `2026.09.24` |
+| `date_released` | STRING | Catalog release timestamp as emitted |
+| `raw_json` | STRING, not null | The complete KEV entry exactly as received |
+| `payload_sha256` | STRING, not null | SHA-256 of `raw_json` |
+| `source_uri` | STRING, not null | Feed URL or file path |
+| `load_type` | STRING, not null | Always `FULL` |
+| `batch_id` | STRING, not null | Run identifier |
+| `load_timestamp` | TIMESTAMP, not null | UTC instant the batch started |
+
+### Landing volume `workspace.vulnpulse_bronze.landing`
+Free Edition serverless has no outbound internet, so files arrive here from a laptop:
+`scripts/fetch_nvd.py` / `scripts/fetch_kev.py` write `nvd/<batch_id>/page_*.json` or
+`kev/<batch_id>/known_exploited_vulnerabilities.json` plus a `manifest.json` (window start/end, load
+type, source URL, batch id, record count). The folder is uploaded through Catalog Explorer, read into
+Bronze by the notebook, then deleted once the append succeeded (FinOps rule). Yearly feed files for the
+historical FULL load are uploaded the same way.
 
 ---
 
 ## 2. Silver Layer (Cleansed and Normalized)
 
 The Silver layer unpacks nested JSON structures, standardizes data types, sanitizes identifying attributes, and deduplicates records.
+
+**Phase 2 scope:** `silver_cve` and `silver_kev`, plus a `silver_quarantine` table for records that
+cannot be conformed. `silver_affected_product`, `silver_cwe` and `silver_reference` follow in Phase 3.
+Every Silver row additionally carries `load_timestamp` (UTC, when the row was merged) and
+`batch_id` (the Bronze batch it came from), as required by the Phase 2 rubric. Silver is written
+with `MERGE INTO` keyed on `cve_id`, after deduplicating on the latest `last_modified_at`, and is
+parsed from `raw_json` with the typed `NVD_CVE_SCHEMA` / `KEV_RECORD_SCHEMA`.
 
 ### 2.1 `silver_cve`
 - **Grain:** One row per CVE record.
@@ -160,6 +202,34 @@ The Gold layer aggregates data to answer specific business questions and powers 
 - **Inclusion Criteria:** Present in `silver_kev` OR (`cvss_v3_score >= 9.0` and published within last 90 days).
 - **Columns:** `cve_id`, `vendor`, `product`, `severity`, `cvss_score`, `is_exploited`, `due_date`, `required_action`.
 
-### 3.5 `gold_pipeline_audit`
-- **Purpose:** Operational observability and watermark management.
-- **Columns:** `batch_id`, `run_timestamp`, `load_type`, `records_ingested`, `records_written`, `records_rejected`, `watermark_timestamp`, `execution_time_seconds`.
+### 3.5 Operational tables (`workspace.vulnpulse_gold`)
+
+Replaces the proposed `gold_pipeline_audit` with two narrower tables, named to match the Phase 2
+rubric's wording. Both are written by every layer with the same schema module.
+
+#### `pipeline_execution_logs`
+One row per run per layer, written in a `finally` block so failed runs are logged too.
+
+| Column | Type | Description |
+|---|---|---|
+| `batch_id` | STRING | Run identifier shared with the data rows it produced |
+| `layer` | STRING | `Raw-to-Bronze` or `Bronze-to-Silver` |
+| `source` | STRING | File path, API URL with window, or source table processed |
+| `load_type` | STRING | `FULL`, `INCREMENTAL`, `BACKFILL` |
+| `parameters` | STRING | JSON of every parameter the run received |
+| `started_at`, `finished_at` | TIMESTAMP | UTC |
+| `status` | STRING | `SUCCESS` or `FAILURE` |
+| `rows_read`, `rows_inserted`, `rows_updated`, `rows_quarantined` | BIGINT | Audit metrics |
+| `error_message` | STRING | Exception type and message on failure |
+| `load_timestamp` | TIMESTAMP | UTC, equals `finished_at` |
+
+#### `pipeline_watermarks`
+Append-only history of the incremental high-water mark per source; the current value is
+`max(watermark_ts)`.
+
+| Column | Type | Description |
+|---|---|---|
+| `source` | STRING | `nvd_cve_api` |
+| `watermark_ts` | TIMESTAMP | Largest source `lastModified` landed by a successful INCREMENTAL run |
+| `batch_id` | STRING | The run that advanced it |
+| `load_timestamp` | TIMESTAMP | UTC |

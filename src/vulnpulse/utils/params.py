@@ -34,12 +34,12 @@ def parse_load_type(value: str) -> str:
 class BronzeRunParams:
     """Parameters for one Raw-to-Bronze run.
 
-    load_type    FULL (read files from source_path), INCREMENTAL (API from watermark) or
-                 BACKFILL (API for an explicit start_date..end_date window).
+    load_type    FULL (a feed file or folder), INCREMENTAL or BACKFILL (a landing folder produced
+                 by scripts/fetch_nvd.py, containing page_*.json and manifest.json).
     catalog      Unity Catalog catalog, e.g. ``workspace``.
-    source_path  File or directory to read for FULL loads. Ignored otherwise.
+    source_path  File or folder to read. Required for every load type.
     start_date / end_date
-                 ISO-8601 UTC bounds for BACKFILL. Ignored otherwise.
+                 Optional ISO-8601 UTC bounds; used for BACKFILL when the folder has no manifest.
     batch_id     Caller-supplied id, or a new one when blank.
     """
 
@@ -53,10 +53,10 @@ class BronzeRunParams:
     def __post_init__(self) -> None:
         object.__setattr__(self, "load_type", parse_load_type(self.load_type))
         object.__setattr__(self, "batch_id", self.batch_id.strip() or new_batch_id())
-        if self.load_type == "FULL" and not self.source_path:
-            raise ValueError("FULL load requires source_path")
-        if self.load_type == "BACKFILL" and not (self.start_date and self.end_date):
-            raise ValueError("BACKFILL requires start_date and end_date")
+        if not self.source_path:
+            raise ValueError(f"{self.load_type} load requires source_path")
+        if (self.start_date is None) != (self.end_date is None):
+            raise ValueError("start_date and end_date must be given together")
 
     @property
     def bronze_schema(self) -> str:

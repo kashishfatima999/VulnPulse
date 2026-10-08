@@ -7,7 +7,7 @@ An automated Apache Spark data engineering pipeline based on the Medallion Archi
 [![Platform](https://img.shields.io/badge/Platform-Databricks%20Free%20Edition-red)](https://databricks.com/)
 [![Engine](https://img.shields.io/badge/Engine-Apache%20Spark%203.x-orange)](https://spark.apache.org/)
 [![BI](https://img.shields.io/badge/BI-Power%20BI-yellow)](https://powerbi.microsoft.com/)
-[![Phase](https://img.shields.io/badge/Phase-Phase%201%20Proposal-green)](docs/24L-2605%2624L-2512-VulnPulse_Phase1_Proposal.pdf)
+[![Phase](https://img.shields.io/badge/Phase-Phase%202%20In%20Progress-orange)](docs/24L-2605%2624L-2512-VulnPulse_Phase1_Proposal.pdf)
 
 ---
 
@@ -68,7 +68,7 @@ flowchart TD
         G_Vendor["gold_vendor_risk (Vendor exposure and KEV ratios)"]
         G_KEV_Resp["gold_kev_response (Days to KEV inclusion metrics)"]
         G_Watch["gold_watchlist (Actionable priority CVEs)"]
-        G_Audit["gold_pipeline_audit (Execution metrics and lineage)"]
+        G_Audit["pipeline_execution_logs + pipeline_watermarks (Run audit, incremental state)"]
     end
 
     subgraph BI ["Presentation Layer"]
@@ -110,7 +110,7 @@ flowchart TD
 - **Source:** NIST NVD CVE API 2.0 (`https://services.nvd.nist.gov/rest/json/cves/2.0`).
 - **Mechanism:** Filtered queries using `lastModStartDate` and `lastModEndDate` UTC timestamps.
 - **Frequency:** Daily batches capturing newly published or modified CVE records.
-- **Watermarking:** The pipeline persists the maximum `lastModified` timestamp from each batch into `gold_pipeline_audit`. Subsequent queries use a 10-minute overlap window to prevent data loss, with deduplication handled in Silver.
+- **Watermarking:** After each successful INCREMENTAL run the maximum source `lastModified` is appended to `pipeline_watermarks`. The next run queries from that value minus a 10-minute overlap to the current time; the duplicates the overlap creates are harmless in append-only Bronze and removed by Silver's `MERGE INTO`. BACKFILL runs use an explicit window and never move the watermark.
 
 ### 3. Enrichment Source
 - **Source:** CISA Known Exploited Vulnerabilities (KEV) Catalog JSON feed.
@@ -146,26 +146,38 @@ VulnPulse/
 │   └── ci.yml                        # CI on every PR: ruff lint, pytest (local PySpark), sample integrity
 ├── notebooks/                        # Thin Databricks notebooks (source format). RUN THESE.
 │   ├── 00_setup_catalog.py           # Once: creates vulnpulse_bronze/silver/gold schemas + landing volume
-│   └── 01_bronze_nvd.py              # Raw-to-Bronze runner: FULL / INCREMENTAL / BACKFILL via widgets
+│   ├── 01_bronze_nvd.py              # Raw-to-Bronze NVD: FULL / INCREMENTAL / BACKFILL from a landing folder
+│   └── 02_bronze_kev.py              # Raw-to-Bronze CISA KEV: full snapshot from a landing folder
 ├── src/vulnpulse/                    # Production code, imported by notebooks and tests. Never run directly.
 │   ├── schemas/
 │   │   ├── nvd.py                    # Explicit StructTypes for NVD pages (raw envelope) and typed CVE records
 │   │   └── kev.py                    # Explicit StructTypes for the CISA KEV catalog and records
+│   ├── ingestion/
+│   │   ├── nvd_api.py                # NVD API 2.0 client: windows, pagination, retry, rate-limit pauses
+│   │   └── landing.py                # manifest.json read/write, CLI window resolution
 │   ├── bronze/
-│   │   └── nvd.py                    # Read NVD files, one row per CVE, attach metadata, append to Delta
+│   │   ├── nvd.py                    # Read NVD files, one row per CVE, attach metadata, append to Delta
+│   │   └── kev.py                    # Download KEV catalog, one row per entry, append to Delta
 │   ├── audit/
 │   │   └── execution_log.py          # pipeline_execution_logs table: one row per run per layer
 │   └── utils/
-│       └── params.py                 # Validated run parameters (load_type, dates, batch_id, catalog)
+│       ├── params.py                 # Validated run parameters (load_type, dates, batch_id, catalog)
+│       └── watermark.py              # pipeline_watermarks table and incremental window logic
 ├── tests/                            # pytest suite; run locally and in CI, never in Databricks
 │   ├── conftest.py                   # Local SparkSession fixture, sample data path
 │   ├── test_bronze_nvd.py            # Raw preservation, Bronze schema, hash stability, typed parse
 │   ├── test_schemas_kev.py           # KEV envelope + typed record schema
 │   ├── test_params_and_log.py        # Parameter validation, execution-log row construction
+│   ├── test_nvd_api.py               # Pagination, 120-day chunking, retry/backoff (no network)
+│   ├── test_watermark.py             # Incremental window rules
+│   ├── test_bronze_kev.py            # KEV explode + Bronze schema
+│   ├── test_landing.py               # Manifest round-trip, CLI window rules
 │   └── test_sample_payloads.py       # Phase 1 sample shape checks
-├── scripts/                          # Phase 1 tooling, used by CI only
-│   ├── collect_phase1_samples.py     # Re-fetches the ten-record samples from NVD/CISA
-│   └── validate_samples.py           # Verifies samples against source_manifest.json
+├── scripts/                          # Laptop-side tooling (Free Edition serverless has no internet)
+│   ├── fetch_nvd.py                  # Fetch an NVD window (incremental or backfill) into landing/
+│   ├── fetch_kev.py                  # Download the KEV catalog into landing/
+│   ├── collect_phase1_samples.py     # Phase 1: re-fetches the ten-record samples
+│   └── validate_samples.py           # Phase 1: verifies samples against source_manifest.json (CI)
 ├── data/                             # Ten-record real samples (<100 KB). No full datasets, ever.
 │   ├── nvd_full_load_sample.json
 │   ├── nvd_incremental_load_sample.json
@@ -176,13 +188,15 @@ VulnPulse/
 │   ├── 24L-2605&24L-2512-VulnPulse_Phase1_Proposal.pdf   # Approved Phase 1 proposal
 │   ├── ARCHITECTURE.md               # Lakehouse design and table specifications
 │   ├── FINOPS.md                     # Free Edition quota, storage and testing guardrails
+│   ├── EVIDENCE.md                   # Run evidence: audit rows, screenshots, failure drills
 │   ├── requirements/                 # Teacher's requirement texts (phase1.txt, phase2.txt)
 │   └── planning/                     # Work division and Databricks runbook
 ├── PROJECT_CONTRACT.md               # The rubric as hard rules. Paste into every AI prompt.
 ├── pyproject.toml                    # Project metadata, ruff and pytest configuration
 ├── requirements-dev.txt              # Dev/CI dependencies: pyspark, pytest, ruff
 ├── .gitattributes                    # LF line endings so SHA-256 digests match across OSes
-├── .gitignore                        # Excludes data dumps, Delta/Parquet, venvs, caches, secrets
+├── landing/                          # Git-ignored. Local output of fetch_*.py before upload to the volume
+├── .gitignore                        # Excludes landing/, data dumps, Delta/Parquet, venvs, caches, secrets
 ├── LICENSE                           # MIT
 └── README.md
 ```
@@ -193,6 +207,8 @@ VulnPulse/
 GitHub (source of truth)
    │  pull
    ▼
+Laptop: scripts/fetch_*.py ──upload──► /Volumes/.../landing/<src>/<batch_id>
+                                              │
 Databricks Git folder ──► notebooks/01_bronze_nvd.py ──imports──► src/vulnpulse/*
                                      │
                                      ├──► workspace.vulnpulse_bronze.bronze_nvd_raw   (Delta, append-only)
@@ -217,10 +233,107 @@ python scripts/collect_phase1_samples.py
 
 ---
 
+## Phase 2: Pipeline Implementation
+
+The teacher's Phase 2 requirements are in [`docs/requirements/phase2.txt`](docs/requirements/phase2.txt).
+[`PROJECT_CONTRACT.md`](PROJECT_CONTRACT.md) restates them as rules every file must follow.
+Status: Raw-to-Bronze for both sources is implemented; Bronze-to-Silver is in progress.
+
+### Phase 2 Rubric Compliance Matrix
+
+| Requirement | How VulnPulse meets it | Evidence |
+|---|---|---|
+| Workspace and continuous version control | Databricks Free Edition (serverless, Unity Catalog). All code lives in this repository; work happens on feature branches merged to `main` through pull requests that CI must pass. Databricks Git folders pull the branches; nothing is edited outside Git. | `.github/workflows/ci.yml`, PR history |
+| Data dictionary for Bronze and Silver | Bronze below and in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Column names, types and keys are declared once in code as `StructType`s, so tables and documentation cannot drift apart. Silver: in progress. | `src/vulnpulse/bronze/nvd.py`, `kev.py` |
+| Strict schema-on-read, no `inferSchema` | Every `spark.read` passes an explicit `StructType`. A typed envelope schema captures each record verbatim; the typed record schema is applied in Silver with `from_json`. | `src/vulnpulse/schemas/`, `tests/test_bronze_nvd.py` |
+| Casting into Silver | Bronze keeps source strings untouched; Silver casts to `TimestampType` and `DoubleType`. In progress. | `src/vulnpulse/silver/` |
+| `load_timestamp` on every record | Every Bronze row and every operational row carries `load_timestamp` (UTC). Silver rows will too. | `BRONZE_NVD_SCHEMA`, `BRONZE_KEV_SCHEMA`, `EXECUTION_LOG_SCHEMA` |
+| Idempotent execution with `MERGE INTO` | Bronze is append-only with a per-record `payload_sha256`; re-running the same input yields identical hashes in a new batch, which Silver's `MERGE INTO` on `cve_id` collapses. Silver merge: in progress. | `tests/test_bronze_nvd.py::test_same_payload_hashes_identically` |
+| Parameterised backfills | One notebook, three modes chosen by widgets or job parameters: FULL (any file or folder), INCREMENTAL (landing folder from the watermark), BACKFILL (landing folder for any explicit window; `fetch_nvd.py --start --end`). No hardcoded dates, paths or table names; the manifest carries the window. | `notebooks/01_bronze_nvd.py`, `scripts/fetch_nvd.py`, `src/vulnpulse/utils/params.py` |
+| Schema drift handling | Raw preservation means a new source field is never lost. Known-key sets flag unmodelled fields; the samples already exposed two real cases (`affected` in NVD, `forensicTriage` in KEV). Silver quarantines rows that cannot be conformed. In progress for Silver. | `NVD_CVE_KNOWN_KEYS`, `KEV_KNOWN_KEYS`, tests |
+| Dedicated logging tables and audit metrics | `pipeline_execution_logs` records layer, source and parameters, start and end time, status, rows read / inserted / updated / quarantined and the error message. It is written in a `finally` block so failures are logged too. `pipeline_watermarks` keeps incremental state with history. | `src/vulnpulse/audit/execution_log.py`, `src/vulnpulse/utils/watermark.py` |
+| Execution guide | Below. | this README |
+
+### Bronze Data Dictionary
+
+Full detail with descriptions in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Both Bronze tables are
+Delta, append-only, one row per source record per batch, primary key (`cve_id`, `batch_id`).
+
+| Table | Columns |
+|---|---|
+| `workspace.vulnpulse_bronze.bronze_nvd_raw` | `cve_id` STRING, `source_last_modified` STRING, `raw_json` STRING, `payload_sha256` STRING, `source_uri` STRING, `load_type` STRING, `batch_id` STRING, `load_timestamp` TIMESTAMP |
+| `workspace.vulnpulse_bronze.bronze_cisa_raw` | `cve_id` STRING, `catalog_version` STRING, `date_released` STRING, `raw_json` STRING, `payload_sha256` STRING, `source_uri` STRING, `load_type` STRING, `batch_id` STRING, `load_timestamp` TIMESTAMP |
+| `workspace.vulnpulse_gold.pipeline_execution_logs` | `batch_id`, `layer`, `source`, `load_type`, `parameters`, `started_at`, `finished_at`, `status`, `rows_read`, `rows_inserted`, `rows_updated`, `rows_quarantined`, `error_message`, `load_timestamp` |
+| `workspace.vulnpulse_gold.pipeline_watermarks` | `source`, `watermark_ts`, `batch_id`, `load_timestamp` |
+
+### Execution Guide
+
+**Why acquisition runs outside Databricks.** Databricks Free Edition serverless compute has no
+outbound internet: only PyPI resolves, `services.nvd.nist.gov` and `www.cisa.gov` do not (verified
+8 Oct 2026, see `docs/EVIDENCE.md`). So the pipeline is split into two steps:
+
+```text
+LAPTOP (internet)                        DATABRICKS (Spark, Delta, no internet)
+scripts/fetch_nvd.py  ─┐                 notebooks/01_bronze_nvd.py  ──► bronze_nvd_raw
+scripts/fetch_kev.py  ─┤  upload folder  notebooks/02_bronze_kev.py  ──► bronze_cisa_raw
+   page_*.json         ├───────────────► /Volumes/workspace/vulnpulse_bronze/landing/<src>/<batch_id>
+   manifest.json      ─┘                 (manifest carries window, load type, source URL, batch id)
+```
+
+The notebooks never call the network. Every run is parameterised by the landing folder and its
+manifest, so any historical window can be re-fetched and re-loaded at will.
+
+**Step 1, on a laptop** (needs `pip install -r requirements-dev.txt`; `NVD_API_KEY` in the environment is optional):
+
+| Goal | Command | Produces |
+|---|---|---|
+| Standard daily incremental (last 24 h) | `python scripts/fetch_nvd.py` | `landing/nvd/<batch_id>/` with `load_type=INCREMENTAL` |
+| Incremental from the last watermark | `python scripts/fetch_nvd.py --start <watermark minus 10 min>` (the notebook prints this exact command after each run) | same |
+| Backfill a historical window | `python scripts/fetch_nvd.py --start 2026-10-01T00:00:00 --end 2026-10-02T00:00:00` | `load_type=BACKFILL`; windows over 120 days are chunked automatically |
+| KEV snapshot | `python scripts/fetch_kev.py` | `landing/kev/<batch_id>/` |
+
+**Step 2, upload.** Databricks, Catalog, `workspace`, `vulnpulse_bronze`, `landing`: create the folder
+printed by the script (`nvd/<batch_id>` or `kev/<batch_id>`) and upload every file in it.
+
+**Step 3, run the notebook** with these widget values:
+
+| Goal | Notebook | `load_type` | `source_path` | Watermark |
+|---|---|---|---|---|
+| Historical baseline from a yearly feed | `01_bronze_nvd` | `FULL` | `/Volumes/workspace/vulnpulse_bronze/landing/nvdcve-2.0-2025.json.gz` (uploaded feed file or folder) | untouched |
+| Smoke test | `01_bronze_nvd` | `FULL` | default (ten-record sample inside the Git folder) | untouched |
+| Incremental | `01_bronze_nvd` | `INCREMENTAL` | `/Volumes/workspace/vulnpulse_bronze/landing/nvd/<batch_id>` | read, then advanced to max `lastModified` |
+| Backfill | `01_bronze_nvd` | `BACKFILL` | `/Volumes/workspace/vulnpulse_bronze/landing/nvd/<batch_id>` | untouched |
+| KEV snapshot | `02_bronze_kev` | n/a | `/Volumes/workspace/vulnpulse_bronze/landing/kev/<batch_id>` | n/a |
+
+Leave `batch_id` blank: the notebook reuses the id from `manifest.json`, so landing folder, Bronze
+rows and audit row share one identifier. `start_date` / `end_date` are only needed for a BACKFILL
+folder that has no manifest. After a successful run the landing folder is deleted from the volume.
+
+Inspect any run:
+
+```sql
+SELECT * FROM workspace.vulnpulse_gold.pipeline_execution_logs ORDER BY started_at DESC;
+SELECT * FROM workspace.vulnpulse_gold.pipeline_watermarks ORDER BY load_timestamp DESC;
+SELECT batch_id, load_type, count(*) FROM workspace.vulnpulse_bronze.bronze_nvd_raw GROUP BY 1, 2;
+```
+
+### Engineering Practices
+
+- **Thin notebooks, real modules.** Notebooks read parameters, call functions in `src/vulnpulse/` and display results. Logic is importable and unit-testable.
+- **Tests before Databricks.** 45 pytest tests run on a local SparkSession against the ten-record samples, including a byte-for-byte raw-preservation check and network-free API pagination tests with injected fakes.
+- **CI gates every pull request.** Ruff lint and format, pytest with local PySpark, and sample-manifest integrity. Branches never merge red.
+- **Explicit, idempotent DDL.** Tables are created with `CREATE TABLE IF NOT EXISTS` from the same `StructType` the code writes with.
+- **UTC everywhere.** One clock (`utc_now()`), session time zone pinned to UTC, timestamps stored as instants.
+- **Failure is logged, not hidden.** Audit rows are written in `finally`; errors are re-raised after logging.
+- **FinOps.** Landing files are purged after a successful append; incremental runs fetch only the changed window; the ten-record samples, not full feeds, are used for development. Acquisition runs on a laptop, so no Databricks compute is spent waiting on slow public APIs.
+- **Secrets.** API keys come from Databricks secrets or job parameters, never from code.
+
+---
+
 ## Project Execution Plan
 
 - **Phase 1 (Completed):** Proposal document, domain and source identification, sample payloads, Medallion architecture model, FinOps plan, and repository initialization.
-- **Phase 2:** Automated ingestion pipeline in Apache Spark (Databricks), Bronze and Silver transformations, incremental watermarking, and data-quality validation.
+- **Phase 2 (In progress, due 10 Oct 2026):** Raw-to-Bronze for NVD (full, incremental, backfill) and CISA KEV with explicit schemas, audit logging and watermarks: done. Bronze-to-Silver with casting, `MERGE INTO`, quarantine and audit: in progress.
 - **Phase 3:** Gold aggregate tables, Power BI business intelligence dashboard, and final documentation.
 
 ---

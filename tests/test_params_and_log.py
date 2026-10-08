@@ -20,19 +20,21 @@ def test_parse_load_type_normalises_and_rejects():
         parse_load_type("DAILY")
 
 
-def test_full_requires_source_path():
+@pytest.mark.parametrize("load_type", ["FULL", "INCREMENTAL", "BACKFILL"])
+def test_every_load_type_requires_source_path(load_type):
     with pytest.raises(ValueError):
-        BronzeRunParams(load_type="FULL")
-    p = BronzeRunParams(load_type="FULL", source_path="/Volumes/x/y/z")
+        BronzeRunParams(load_type=load_type)
+    p = BronzeRunParams(load_type=load_type, source_path="/Volumes/x/y/z")
     assert p.batch_id  # auto-generated
     assert p.bronze_schema == "workspace.vulnpulse_bronze"
 
 
-def test_backfill_requires_window():
+def test_dates_must_come_in_pairs():
     with pytest.raises(ValueError):
-        BronzeRunParams(load_type="BACKFILL", start_date="2026-01-01T00:00:00")
+        BronzeRunParams(load_type="BACKFILL", source_path="/v", start_date="2026-01-01T00:00:00")
     p = BronzeRunParams(
         load_type="BACKFILL",
+        source_path="/v",
         start_date="2026-01-01T00:00:00",
         end_date="2026-01-02T00:00:00",
         batch_id="  given  ",
