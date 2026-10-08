@@ -127,6 +127,76 @@ display(
 
 # COMMAND ----------
 
+from vulnpulse.bronze.kev import BRONZE_KEV_TABLE  # noqa: E402
+from vulnpulse.silver import kev as kev_tf  # noqa: E402
+
+BRONZE_KEV = f"{params.bronze_schema}.{BRONZE_KEV_TABLE}"
+KEV_TABLE = tables[ddl.SILVER_KEV_TABLE]
+
+started_at = utc_now()
+rows_read = inserted = updated = quarantined = 0
+drift_keys = []
+error = None
+
+try:
+    bronze = filter_bronze(spark.table(BRONZE_KEV), params)
+    rows_read = bronze.count()
+
+    shaped = kev_tf.transform_kev(bronze, load_timestamp=started_at)
+    drift_keys = sorted(
+        r["k"] for r in shaped.select(F.explode("unknown_keys").alias("k")).distinct().collect()
+    )
+
+    valid, bad = quality.split_valid_invalid(shaped, quality.kev_rules(), source_table=BRONZE_KEV)
+    latest = merge.dedup_latest(valid, "cve_id", kev_tf.KEV_DEDUP_ORDER).select(
+        *kev_tf.SILVER_KEV_COLUMNS
+    )
+
+    kev_counts = merge.merge_upsert(
+        spark, latest, KEV_TABLE, key="cve_id", update_condition=merge.KEV_UPDATE_CONDITION
+    )
+    q_counts = merge.merge_quarantine(spark, bad, QUARANTINE_TABLE)
+    inserted, updated = kev_counts["inserted"], kev_counts["updated"]
+    quarantined = q_counts["inserted"]
+    status = log.STATUS_SUCCESS
+except Exception as exc:  # noqa: BLE001 - logged then re-raised
+    status = log.STATUS_FAILURE
+    error = f"{type(exc).__name__}: {exc}"[:2000]
+    raise
+finally:
+    log.append(
+        log.build_log_row(
+            spark,
+            batch_id=params.run_id + "-kev",
+            layer=log.LAYER_BRONZE_TO_SILVER,
+            source=f"{BRONZE_KEV} -> {KEV_TABLE}",
+            load_type=params.load_type,
+            parameters={**params.as_dict(), "schema_drift_keys": drift_keys},
+            started_at=started_at,
+            finished_at=utc_now(),
+            status=status,
+            rows_read=rows_read,
+            rows_inserted=inserted,
+            rows_updated=updated,
+            rows_quarantined=quarantined,
+            error_message=error,
+        ),
+        LOG_TABLE,
+    )
+
+print(
+    f"KEV {status}: read {rows_read}, inserted {inserted}, updated {updated}, "
+    f"quarantined {quarantined}, schema drift keys {drift_keys or 'none'}"
+)
+display(
+    spark.sql(
+        f"SELECT count(*) AS kev_rows, count(DISTINCT cve_id) AS distinct_cves, "
+        f"min(date_added) AS first_added, max(date_added) AS last_added FROM {KEV_TABLE}"
+    )
+)
+
+# COMMAND ----------
+
 # Failure drills on scratch copies of the Silver tables, so real Silver stays clean.
 DRILL_CVE = f"{params.silver_schema}.drill_silver_cve"
 DRILL_QUARANTINE = f"{params.silver_schema}.drill_silver_quarantine"
