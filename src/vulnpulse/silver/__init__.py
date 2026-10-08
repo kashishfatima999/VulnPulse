@@ -1,1 +1,1 @@
-   """Bronze-to-Silver: typed, deduplicated, PII-sanitised tables built from Bronze raw_json."""
+"""Bronze-to-Silver: typed, deduplicated, PII-sanitised tables built from Bronze raw_json."""

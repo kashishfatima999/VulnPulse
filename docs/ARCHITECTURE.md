@@ -134,19 +134,25 @@ with `MERGE INTO` keyed on `cve_id`, after deduplicating on the latest `last_mod
 parsed from `raw_json` with the typed `NVD_CVE_SCHEMA` / `KEV_RECORD_SCHEMA`.
 
 ### 2.1 `silver_cve`
-- **Grain:** One row per CVE record.
-- **Deduplication Strategy:** Window partitioned by `cve_id`, ordered by `last_modified_at DESC`.
-- **Schema:**
-  - `cve_id` (StringType, PK): Format `CVE-YYYY-[0-9]+`.
-  - `published_at` (TimestampType): Disclosed date from NVD.
-  - `last_modified_at` (TimestampType): Latest modification date.
-  - `vuln_status` (StringType): Status (e.g., `Analyzed`, `Modified`).
-  - `description_en` (StringType): Extracted English description (`descriptions[?(@.lang=='en')].value`).
-  - `cvss_v3_score` (DoubleType): Derived base score from `cvssMetricV31` or `cvssMetricV30`.
-  - `cvss_v3_severity` (StringType): `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`.
-  - `cvss_vector` (StringType): CVSS vector string.
-  - `has_source_identifier` (BooleanType): Lineage flag indicating submitter attribution was present.
-  - `ingestion_batch_id` (StringType): Traceability to Bronze batch.
+- **Grain:** One row per CVE. **Primary key:** `cve_id`.
+- **Source:** `bronze_nvd_raw.raw_json`, parsed with `NVD_CVE_SCHEMA` (nested arrays) and `get_json_object` (top-level scalars, so a type change in one nested field cannot null the record).
+- **Deduplication:** window on `cve_id` ordered by `last_modified_at DESC`, then `batch_id DESC`, `payload_sha256 DESC` as deterministic tie-breakers.
+- **MERGE:** `ON t.cve_id = s.cve_id`; `WHEN MATCHED AND s.last_modified_at > t.last_modified_at THEN UPDATE`; `WHEN NOT MATCHED THEN INSERT`.
+
+| Column | Type | Derivation |
+|---|---|---|
+| `cve_id` | STRING, not null | Bronze `cve_id` (`$.id`), trimmed; must match `^CVE-\d{4}-\d{4,}$` |
+| `published_at` | TIMESTAMP | `$.published`, UTC, format `yyyy-MM-dd'T'HH:mm:ss[.SSS]` |
+| `last_modified_at` | TIMESTAMP | `$.lastModified`, same parsing |
+| `vuln_status` | STRING | `$.vulnStatus` (e.g. `Analyzed`, `Modified`, `Received`) |
+| `description_en` | STRING | First `descriptions[]` entry with `lang = 'en'` |
+| `cvss_v3_score` | DOUBLE | Base score of the `Primary` entry of `cvssMetricV31`, else its first entry, else the same from `cvssMetricV30`; a stringified score is cast with `try_cast` |
+| `cvss_v3_severity` | STRING | Matching `baseSeverity`, upper-cased |
+| `cvss_vector` | STRING | Matching `vectorString` |
+| `has_source_identifier` | BOOLEAN | `$.sourceIdentifier IS NOT NULL`; the identifier itself is never stored (PII rule) |
+| `payload_sha256` | STRING | Bronze hash of the winning raw record (lineage) |
+| `batch_id` | STRING, not null | Bronze batch the winning record came from |
+| `load_timestamp` | TIMESTAMP, not null | UTC start time of the Silver run that last wrote the row |
 
 ### 2.2 `silver_affected_product`
 - **Grain:** One row per CVE to Product configuration.
@@ -164,16 +170,34 @@ parsed from `raw_json` with the typed `NVD_CVE_SCHEMA` / `KEV_RECORD_SCHEMA`.
   - `cwe_id` (StringType): Identifier (e.g., `CWE-79`, `CWE-89`).
 
 ### 2.4 `silver_kev`
-- **Grain:** One row per known exploited CVE.
-- **Schema:**
-  - `cve_id` (StringType, PK): References `silver_cve.cve_id`.
-  - `vendor_project` (StringType): Vendor identifier from CISA.
-  - `product` (StringType): Product identifier from CISA.
-  - `vulnerability_name` (StringType): Descriptive vulnerability title.
-  - `date_added` (DateType): Date added to CISA KEV catalog.
-  - `due_date` (DateType): Federal remediation deadline.
-  - `known_ransomware_campaign_use` (StringType): `Known` or `Unknown`.
-  - `required_action` (StringType): Specific remediation instruction.
+- **Grain:** One row per known exploited CVE. **Primary key:** `cve_id`.
+- **Source:** `bronze_cisa_raw.raw_json`, parsed with `KEV_RECORD_SCHEMA`.
+- **Deduplication:** window on `cve_id` ordered by `catalog_version DESC`, `batch_id DESC`, `payload_sha256 DESC` (KEV has no modification timestamp).
+- **MERGE:** update a matched row only when `s.payload_sha256 <> t.payload_sha256 AND s.catalog_version >= t.catalog_version`.
+
+| Column | Type | Derivation |
+|---|---|---|
+| `cve_id` | STRING, not null | `$.cveID`; references `silver_cve.cve_id` |
+| `vendor_project` | STRING | `$.vendorProject` |
+| `product` | STRING | `$.product` |
+| `vulnerability_name` | STRING | `$.vulnerabilityName` |
+| `date_added` | DATE | `$.dateAdded` (`yyyy-MM-dd`) |
+| `due_date` | DATE | `$.dueDate` (`yyyy-MM-dd`) |
+| `known_ransomware_campaign_use` | STRING | `Known` or `Unknown` |
+| `required_action` | STRING | `$.requiredAction` |
+| `catalog_version` | STRING | Bronze `catalog_version` (e.g. `2026.10.04`) |
+| `payload_sha256` | STRING | Bronze hash (lineage) |
+| `batch_id` | STRING, not null | Bronze batch |
+| `load_timestamp` | TIMESTAMP, not null | UTC start time of the Silver run |
+
+### 2.5 `silver_quarantine`
+- **Grain:** One row per rejected Bronze record per reason. **Primary key:** (`source_table`, `batch_id`, `payload_sha256`, `reason`); written with an insert-only `MERGE`, so re-runs never duplicate it.
+- **Columns:** `source_table` STRING, `cve_id` STRING (nullable: a missing id is a reason), `reason` STRING, `raw_json` STRING, `payload_sha256` STRING, `batch_id` STRING, `load_timestamp` TIMESTAMP.
+- **Reasons:** `missing_cve_id`, `invalid_cve_id_format`, `unparseable_published`, `unparseable_last_modified` (NVD), `unparseable_date_added` (KEV). Rules are checked in that order; the first one broken is recorded.
+
+### 2.6 Schema drift
+- A new top-level source field is preserved in Bronze `raw_json` and listed per run in the audit row's `parameters.schema_drift_keys` (compared against `NVD_CVE_KNOWN_KEYS` / `KEV_KNOWN_KEYS`). The run does not fail.
+- A changed type (e.g. a score sent as a string) is absorbed by `try_` casts; if the value still cannot be conformed and the field is required, the record is quarantined.
 
 ---
 
