@@ -237,20 +237,20 @@ python scripts/collect_phase1_samples.py
 
 The teacher's Phase 2 requirements are in [`docs/requirements/phase2.txt`](docs/requirements/phase2.txt).
 [`PROJECT_CONTRACT.md`](PROJECT_CONTRACT.md) restates them as rules every file must follow.
-Status: Raw-to-Bronze for both sources is implemented; Bronze-to-Silver is in progress.
+Status: Raw-to-Bronze and Bronze-to-Silver are implemented for both sources (NVD and CISA KEV).
 
 ### Phase 2 Rubric Compliance Matrix
 
 | Requirement | How VulnPulse meets it | Evidence |
 |---|---|---|
 | Workspace and continuous version control | Databricks Free Edition (serverless, Unity Catalog). All code lives in this repository; work happens on feature branches merged to `main` through pull requests that CI must pass. Databricks Git folders pull the branches; nothing is edited outside Git. | `.github/workflows/ci.yml`, PR history |
-| Data dictionary for Bronze and Silver | Bronze below and in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Column names, types and keys are declared once in code as `StructType`s, so tables and documentation cannot drift apart. Silver: in progress. | `src/vulnpulse/bronze/nvd.py`, `kev.py` |
+| Data dictionary for Bronze and Silver | Bronze below and in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Column names, types and keys are declared once in code as `StructType`s, so tables and documentation cannot drift apart. Silver dictionary below. | `src/vulnpulse/bronze/nvd.py`, `kev.py`, `src/vulnpulse/silver/ddl.py` |
 | Strict schema-on-read, no `inferSchema` | Every `spark.read` passes an explicit `StructType`. A typed envelope schema captures each record verbatim; the typed record schema is applied in Silver with `from_json`. | `src/vulnpulse/schemas/`, `tests/test_bronze_nvd.py` |
-| Casting into Silver | Bronze keeps source strings untouched; Silver casts to `TimestampType` and `DoubleType`. In progress. | `src/vulnpulse/silver/` |
-| `load_timestamp` on every record | Every Bronze row and every operational row carries `load_timestamp` (UTC). Silver rows will too. | `BRONZE_NVD_SCHEMA`, `BRONZE_KEV_SCHEMA`, `EXECUTION_LOG_SCHEMA` |
-| Idempotent execution with `MERGE INTO` | Bronze is append-only with a per-record `payload_sha256`; re-running the same input yields identical hashes in a new batch, which Silver's `MERGE INTO` on `cve_id` collapses. Silver merge: in progress. | `tests/test_bronze_nvd.py::test_same_payload_hashes_identically` |
+| Casting into Silver | Bronze keeps source strings untouched. Silver casts NVD dates to `TimestampType` (UTC), CVSS scores to `DoubleType` (a score sent as the string `"9.8"` still casts) and KEV dates to `DateType`. Every cast is a `try_` cast: a bad value becomes NULL and the row is quarantined instead of failing the batch. | `src/vulnpulse/silver/transform.py`, `kev.py`, `tests/test_silver_nvd.py` |
+| `load_timestamp` on every record | Every Bronze, Silver and operational row carries `load_timestamp` (UTC). Silver rows also carry the Bronze `batch_id` they came from. | `BRONZE_NVD_SCHEMA`, `BRONZE_KEV_SCHEMA`, `EXECUTION_LOG_SCHEMA` |
+| Idempotent execution with `MERGE INTO` | Bronze is append-only with a per-record `payload_sha256`. Silver deduplicates on `cve_id` (latest `last_modified_at` wins, deterministic tie-breakers), then `MERGE INTO ... ON cve_id`, updating a matched row only when the source is strictly newer. Quarantine is written with an insert-only MERGE. Verified in Databricks: `silver_cve` first run inserted 1,580 / updated 0, second run on the same Bronze inserted 0 / updated 0; `silver_kev` 1,734 then 0 / 0. | `src/vulnpulse/silver/merge.py`, `docs/EVIDENCE.md` (S2, S3, K1, K2) |
 | Parameterised backfills | One notebook, three modes chosen by widgets or job parameters: FULL (any file or folder), INCREMENTAL (landing folder from the watermark), BACKFILL (landing folder for any explicit window; `fetch_nvd.py --start --end`). No hardcoded dates, paths or table names; the manifest carries the window. | `notebooks/01_bronze_nvd.py`, `scripts/fetch_nvd.py`, `src/vulnpulse/utils/params.py` |
-| Schema drift handling | Raw preservation means a new source field is never lost. Known-key sets flag unmodelled fields; the samples already exposed two real cases (`affected` in NVD, `forensicTriage` in KEV). Silver quarantines rows that cannot be conformed. In progress for Silver. | `NVD_CVE_KNOWN_KEYS`, `KEV_KNOWN_KEYS`, tests |
+| Schema drift handling | Raw preservation means a new source field is never lost. Known-key sets flag unmodelled fields; the samples already exposed two real cases (`affected` in NVD, `forensicTriage` in KEV). Silver compares each record's top-level keys with the known-key set and records new ones in the run's audit `parameters` (`schema_drift_keys`) without failing; a changed type is absorbed by `try_` casts; a record that still cannot be conformed (missing or malformed id, unparseable date) goes to `silver_quarantine` with a `reason` and the batch continues. Drill D1 to D4 verified this in Databricks. | `src/vulnpulse/silver/quality.py`, `NVD_CVE_KNOWN_KEYS`, `KEV_KNOWN_KEYS`, `tests/test_silver_*.py` |
 | Dedicated logging tables and audit metrics | `pipeline_execution_logs` records layer, source and parameters, start and end time, status, rows read / inserted / updated / quarantined and the error message. It is written in a `finally` block so failures are logged too. `pipeline_watermarks` keeps incremental state with history. | `src/vulnpulse/audit/execution_log.py`, `src/vulnpulse/utils/watermark.py` |
 | Execution guide | Below. | this README |
 
@@ -265,6 +265,22 @@ Delta, append-only, one row per source record per batch, primary key (`cve_id`, 
 | `workspace.vulnpulse_bronze.bronze_cisa_raw` | `cve_id` STRING, `catalog_version` STRING, `date_released` STRING, `raw_json` STRING, `payload_sha256` STRING, `source_uri` STRING, `load_type` STRING, `batch_id` STRING, `load_timestamp` TIMESTAMP |
 | `workspace.vulnpulse_gold.pipeline_execution_logs` | `batch_id`, `layer`, `source`, `load_type`, `parameters`, `started_at`, `finished_at`, `status`, `rows_read`, `rows_inserted`, `rows_updated`, `rows_quarantined`, `error_message`, `load_timestamp` |
 | `workspace.vulnpulse_gold.pipeline_watermarks` | `source`, `watermark_ts`, `batch_id`, `load_timestamp` |
+
+### Silver Data Dictionary
+
+Delta tables in `workspace.vulnpulse_silver`, created idempotently from the `StructType`s in
+[`src/vulnpulse/silver/ddl.py`](src/vulnpulse/silver/ddl.py). Full descriptions in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) section 2.
+
+| Table | Primary key | Columns |
+|---|---|---|
+| `silver_cve` | `cve_id` | `cve_id` STRING NOT NULL, `published_at` TIMESTAMP, `last_modified_at` TIMESTAMP, `vuln_status` STRING, `description_en` STRING, `cvss_v3_score` DOUBLE, `cvss_v3_severity` STRING, `cvss_vector` STRING, `has_source_identifier` BOOLEAN, `payload_sha256` STRING, `batch_id` STRING NOT NULL, `load_timestamp` TIMESTAMP NOT NULL |
+| `silver_kev` | `cve_id` | `cve_id` STRING NOT NULL, `vendor_project` STRING, `product` STRING, `vulnerability_name` STRING, `date_added` DATE, `due_date` DATE, `known_ransomware_campaign_use` STRING, `required_action` STRING, `catalog_version` STRING, `payload_sha256` STRING, `batch_id` STRING NOT NULL, `load_timestamp` TIMESTAMP NOT NULL |
+| `silver_quarantine` | (`source_table`, `batch_id`, `payload_sha256`, `reason`) | `source_table` STRING NOT NULL, `cve_id` STRING, `reason` STRING NOT NULL, `raw_json` STRING, `payload_sha256` STRING NOT NULL, `batch_id` STRING NOT NULL, `load_timestamp` TIMESTAMP NOT NULL |
+
+Quarantine reasons: `missing_cve_id`, `invalid_cve_id_format`, `unparseable_published`,
+`unparseable_last_modified` (NVD), `unparseable_date_added` (KEV). `sourceIdentifier` is never stored
+(PII rule); only `has_source_identifier`.
 
 ### Execution Guide
 
@@ -309,6 +325,28 @@ Leave `batch_id` blank: the notebook reuses the id from `manifest.json`, so land
 rows and audit row share one identifier. `start_date` / `end_date` are only needed for a BACKFILL
 folder that has no manifest. After a successful run the landing folder is deleted from the volume.
 
+**Step 4, Bronze to Silver.** Notebook `03_silver`, one run cell per source (NVD, then KEV). Each
+run reads Bronze, transforms, quarantines, deduplicates, `MERGE`s and writes one
+`Bronze-to-Silver` row to `pipeline_execution_logs`.
+
+| Goal | `batch_id` | `from_date` | `to_date` | Audit `load_type` |
+|---|---|---|---|---|
+| Standard run (after any Bronze load) | blank | blank | blank | `FULL` |
+| Backfill one Bronze batch | the Bronze `batch_id` | blank | blank | `BACKFILL` |
+| Backfill a historical window | blank | `2026-10-01` | `2026-10-02` | `BACKFILL` |
+
+Dates filter on the Bronze `load_timestamp` (UTC, inclusive). Because Silver is written with
+`MERGE`, the standard run can always process all of Bronze: rows already in Silver are skipped,
+newer versions update, new CVEs insert. Running it twice changes nothing. As a Job parameter, pass
+the same names (`batch_id`, `from_date`, `to_date`, `catalog`).
+
+```sql
+SELECT batch_id, source, load_type, status, rows_read, rows_inserted, rows_updated, rows_quarantined
+FROM workspace.vulnpulse_gold.pipeline_execution_logs WHERE layer = 'Bronze-to-Silver'
+ORDER BY started_at DESC;
+SELECT reason, count(*) FROM workspace.vulnpulse_silver.silver_quarantine GROUP BY 1;
+```
+
 Inspect any run:
 
 ```sql
@@ -320,7 +358,7 @@ SELECT batch_id, load_type, count(*) FROM workspace.vulnpulse_bronze.bronze_nvd_
 ### Engineering Practices
 
 - **Thin notebooks, real modules.** Notebooks read parameters, call functions in `src/vulnpulse/` and display results. Logic is importable and unit-testable.
-- **Tests before Databricks.** 45 pytest tests run on a local SparkSession against the ten-record samples, including a byte-for-byte raw-preservation check and network-free API pagination tests with injected fakes.
+- **Tests before Databricks.** 58 pytest tests run on a local SparkSession against the ten-record samples, including a byte-for-byte raw-preservation check and network-free API pagination tests with injected fakes.
 - **CI gates every pull request.** Ruff lint and format, pytest with local PySpark, and sample-manifest integrity. Branches never merge red.
 - **Explicit, idempotent DDL.** Tables are created with `CREATE TABLE IF NOT EXISTS` from the same `StructType` the code writes with.
 - **UTC everywhere.** One clock (`utc_now()`), session time zone pinned to UTC, timestamps stored as instants.
@@ -333,7 +371,7 @@ SELECT batch_id, load_type, count(*) FROM workspace.vulnpulse_bronze.bronze_nvd_
 ## Project Execution Plan
 
 - **Phase 1 (Completed):** Proposal document, domain and source identification, sample payloads, Medallion architecture model, FinOps plan, and repository initialization.
-- **Phase 2 (In progress, due 10 Oct 2026):** Raw-to-Bronze for NVD (full, incremental, backfill) and CISA KEV with explicit schemas, audit logging and watermarks: done. Bronze-to-Silver with casting, `MERGE INTO`, quarantine and audit: in progress.
+- **Phase 2 (Done, due 10 Oct 2026):** Raw-to-Bronze for NVD (full, incremental, backfill) and CISA KEV with explicit schemas, audit logging and watermarks. Bronze-to-Silver with casting, dedup + `MERGE INTO`, quarantine, schema-drift logging and audit for both sources.
 - **Phase 3:** Gold aggregate tables, Power BI business intelligence dashboard, and final documentation.
 
 ---

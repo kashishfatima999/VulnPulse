@@ -32,13 +32,17 @@ FROM workspace.vulnpulse_gold.pipeline_execution_logs ORDER BY started_at DESC L
 
 ## Silver milestones (Zahra)
 
-| # | Run | What it proves | Status | Evidence |
+All runs on 8 Oct 2026 in `notebooks/03_silver`, serverless, against the Bronze state above
+(NVD: 40 FULL + 862 INCREMENTAL + 708 BACKFILL = 1,610 rows, 1,580 distinct CVEs; KEV: 1,734 rows).
+
+| # | Run | What it proves | Observed | Evidence |
 |---|---|---|---|---|
-| S1 | Silver DDL | Explicit types and keys, `load_timestamp` on every table | | |
-| S2 | `03_silver` on Bronze after B1 | Casting, flattening, `MERGE INTO`, `inserted=10, updated=0` | | |
-| S3 | `03_silver` again on the same Bronze batches | Idempotency: Silver unchanged, `inserted=0, updated=0` | | |
-| S4 | Injected bad rows (string CVSS, missing id) | Compatible cast succeeds; non-conforming row quarantined; batch succeeds | | |
-| S5 | Bronze row with newer `lastModified` for an existing CVE | `MERGE` update path, `updated=1` | | |
+| S1 | Silver DDL (`ddl.ensure_tables`), run twice | Explicit types and keys, `load_timestamp` and `batch_id` on every table; DDL is re-runnable | 3 tables created; second run no-op; `DESCRIBE` shows TIMESTAMP / DOUBLE / BOOLEAN columns | `evidence/s1_silver_ddl.png` |
+| S1b | Transform preview over all Bronze | Casting and flattening | 1,610 rows, 1,580 distinct CVEs, 0 null ids / published / last_modified, 159 null v3 scores (v2-only or unscored CVEs), 0 drift keys | `evidence/s1b_transform_preview.png` |
+| S2 | `03_silver` NVD, first run | Dedup + `MERGE INTO` | read 1,610, inserted 1,580, updated 0, quarantined 0; `silver_cve` 1,580 rows = 1,580 distinct | `evidence/s2_first_run.png` |
+| S3 | Same run again, same Bronze | Idempotency | read 1,610, **inserted 0, updated 0**, quarantined 0; still 1,580 rows | `evidence/s3_second_run.png` |
+| K1 | `03_silver` KEV, first run | Second source through the same path | read 1,734, inserted 1,734, updated 0, quarantined 0; dates 2021-11-03 to 2026-10-04 | `evidence/k1_kev_first_run.png` |
+| K2 | KEV again | Idempotency | **inserted 0, updated 0**, quarantined 0 | `evidence/k2_kev_second_run.png` |
 
 ## Environment finding: no outbound internet on Free Edition serverless
 
@@ -60,12 +64,16 @@ stays in `pipeline_execution_logs` as evidence that failures are logged with the
 
 | Drill | Expected | Observed | Evidence |
 |---|---|---|---|
-| Same Bronze batch processed twice by Silver | No duplicate rows in `silver_cve` | | |
+| Same Bronze batch processed twice by Silver | No duplicate rows in `silver_cve` | inserted 0 / updated 0 on the second run (S3, K2) | `evidence/s3_second_run.png` |
 | NVD API unreachable during INCREMENTAL | Retries with backoff, then FAILURE row in `pipeline_execution_logs`, watermark unchanged | Observed 8 Oct 2026 exactly as expected (see finding above) | `evidence/b4_failure_logged.png` |
 | BACKFILL with `end_date` before `start_date` | Rejected before any write | | |
 | `02_bronze_kev` run with empty `source_path` | Refused inside the run cell, FAILURE row with `ValueError` message, no Bronze rows | Observed 8 Oct 2026, batch `20261008T142424Z-384958d6` | `evidence/pipeline_execution_logs_2026-10-08.csv` |
 | INCREMENTAL pointed at a landing folder already purged by a previous success | No manifest, no dates: refused with a clear message instead of guessing a window | Observed 8 Oct 2026 (raised in the parameter cell, so not logged; see note) | |
-| Record with an unknown top-level key | Kept verbatim in Bronze; flagged by known-key check; Silver ignores or quarantines | | |
+| Record with an unknown top-level key (D4) | Kept verbatim in Bronze; flagged by known-key check; Silver loads it | `drift ['cveNewField']`; row inserted | `evidence/s4_drills.png` |
+| Newer `lastModified` for an existing CVE (D1) | `MERGE` update path | `updated 1`; `last_modified_at` = 2030-01-01 | `evidence/s4_drills.png` |
+| Record with no `cve_id` (D2) | Quarantined, batch continues | `missing_cve_id` row in quarantine | `evidence/s4_drills.png` |
+| Unparseable `published` date (D3) | Quarantined, batch continues | `unparseable_published` row in quarantine | `evidence/s4_drills.png` |
+| CVSS score sent as a string `"8.4"` (D4) | Compatible cast succeeds | `cvss_v3_score = 8.4`, `HIGH` | `evidence/s4_drills.png` |
 
 Note on the last drill: errors raised while reading widgets, before the run cell starts, are not in
 `pipeline_execution_logs` because no run was attempted. Everything from the run cell onwards is logged.
