@@ -8,33 +8,36 @@
 # MAGIC
 # MAGIC Thin runner. Reads parameters, calls `vulnpulse` functions, writes one audit row, shows results.
 # MAGIC
+# MAGIC Databricks Free Edition serverless has **no outbound internet**, so acquisition happens on a
+# MAGIC laptop with `scripts/fetch_nvd.py`, which writes `page_*.json` + `manifest.json`. That folder is
+# MAGIC uploaded to the landing volume and named here as `source_path`. This notebook never calls the
+# MAGIC network.
+# MAGIC
 # MAGIC | Widget | FULL | INCREMENTAL | BACKFILL |
 # MAGIC |---|---|---|---|
 # MAGIC | `load_type` | `FULL` | `INCREMENTAL` | `BACKFILL` |
-# MAGIC | `source_path` | file or folder of NVD JSON (plain or .gz) | ignored | ignored |
-# MAGIC | `start_date` | ignored | optional seed for the very first run (no watermark yet) | required, ISO-8601 UTC |
-# MAGIC | `end_date` | ignored | ignored (now) | required, ISO-8601 UTC |
-# MAGIC | `batch_id` | blank = auto | blank = auto | blank = auto |
+# MAGIC | `source_path` | feed file or folder (plain or .gz) | landing folder with manifest | landing folder with manifest |
+# MAGIC | `start_date` / `end_date` | ignored | ignored (manifest decides) | optional override when the folder has no manifest |
+# MAGIC | `batch_id` | blank = auto | blank = auto (manifest id is preferred) | same |
 # MAGIC | `catalog` | Unity Catalog catalog, default `workspace` | | |
-# MAGIC | `api_key_scope` / `api_key_name` | ignored | optional Databricks secret holding an NVD API key | same |
 # MAGIC
-# MAGIC **INCREMENTAL** asks the NVD API for everything modified since the stored watermark minus a
-# MAGIC 10-minute overlap, lands the pages in the volume, appends them to Bronze, then advances the
-# MAGIC watermark. **BACKFILL** does the same for an explicit window and leaves the watermark alone.
+# MAGIC **INCREMENTAL** appends the landed pages and then advances the watermark to the largest
+# MAGIC `lastModified` seen. **BACKFILL** appends and leaves the watermark alone.
 
 # COMMAND ----------
 
 import os
 import sys
-from datetime import datetime, timezone
 
 SRC_PATH = os.path.abspath(os.path.join(os.getcwd(), "..", "src"))
 if SRC_PATH not in sys.path:
     sys.path.insert(0, SRC_PATH)
 
+from datetime import timedelta  # noqa: E402
+
 from vulnpulse.audit import execution_log as log  # noqa: E402
 from vulnpulse.bronze import nvd as bronze_nvd  # noqa: E402
-from vulnpulse.ingestion import nvd_api  # noqa: E402
+from vulnpulse.ingestion.landing import parse_utc, read_manifest  # noqa: E402
 from vulnpulse.utils import watermark as wm  # noqa: E402
 from vulnpulse.utils.params import BronzeRunParams, utc_now  # noqa: E402
 
@@ -52,33 +55,30 @@ dbutils.widgets.text("start_date", "")
 dbutils.widgets.text("end_date", "")
 dbutils.widgets.text("batch_id", "")
 dbutils.widgets.text("catalog", "workspace")
-dbutils.widgets.text("api_key_scope", "")
-dbutils.widgets.text("api_key_name", "")
+
+load_type = dbutils.widgets.get("load_type")
+source_path = dbutils.widgets.get("source_path").strip().rstrip("/") or None
+manifest = read_manifest(source_path) if (source_path and load_type != "FULL") else None
 
 params = BronzeRunParams(
-    load_type=dbutils.widgets.get("load_type"),
+    load_type=load_type,
     catalog=dbutils.widgets.get("catalog").strip(),
-    source_path=dbutils.widgets.get("source_path").strip() or None,
+    source_path=source_path,
     start_date=dbutils.widgets.get("start_date").strip() or None,
     end_date=dbutils.widgets.get("end_date").strip() or None,
-    batch_id=dbutils.widgets.get("batch_id"),
+    # Prefer the batch id the fetch script minted, so landing folder and Bronze rows share it.
+    batch_id=dbutils.widgets.get("batch_id").strip() or (manifest or {}).get("batch_id", ""),
 )
 
 BRONZE_TABLE = f"{params.bronze_schema}.{bronze_nvd.BRONZE_NVD_TABLE}"
 LOG_TABLE = f"{params.gold_schema}.{log.EXECUTION_LOG_TABLE}"
 WATERMARK_TABLE = f"{params.gold_schema}.{wm.WATERMARK_TABLE}"
-LANDING_DIR = f"/Volumes/{params.catalog}/vulnpulse_bronze/landing/nvd/{params.batch_id}"
-
-api_key = None
-scope, name = dbutils.widgets.get("api_key_scope").strip(), dbutils.widgets.get("api_key_name").strip()
-if scope and name:
-    api_key = dbutils.secrets.get(scope, name)
 
 print("parameters:", params.as_dict())
+print("manifest:  ", manifest or "none")
 print("bronze table:   ", BRONZE_TABLE)
 print("log table:      ", LOG_TABLE)
 print("watermark table:", WATERMARK_TABLE)
-print("api key:        ", "from secret" if api_key else "none (public rate limit)")
 
 # COMMAND ----------
 
@@ -86,49 +86,48 @@ bronze_nvd.ensure_table(spark, BRONZE_TABLE)
 log.ensure_table(spark, LOG_TABLE)
 wm.ensure_table(spark, WATERMARK_TABLE)
 
-
-def parse_utc(value):
-    """Widget text -> aware UTC datetime. Accepts '2026-10-01', '2026-10-01T00:00:00', trailing 'Z'."""
-    if value is None:
-        return None
-    ts = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)
-
-
 # COMMAND ----------
 
 started_at = utc_now()
 rows_read = rows_written = 0
 error = None
 window = None
-fetch = None
+source = params.source_path
 
 try:
     if params.load_type == "FULL":
-        source = params.source_path
-        pages = bronze_nvd.read_nvd_pages(spark, source)
+        pages = bronze_nvd.read_nvd_pages(spark, params.source_path)
     else:
+        if manifest:
+            window = (parse_utc(manifest["window_start"]), parse_utc(manifest["window_end"]))
+            source = manifest.get("source_uri", params.source_path)
+            if manifest.get("load_type") != params.load_type:
+                print(
+                    f"WARNING: manifest says {manifest.get('load_type')} but widget says "
+                    f"{params.load_type}; the widget wins for watermark behaviour."
+                )
+        elif params.start_date and params.end_date:
+            window = (parse_utc(params.start_date), parse_utc(params.end_date))
+        else:
+            raise ValueError(
+                f"{params.load_type} needs a landing folder containing manifest.json "
+                "(run scripts/fetch_nvd.py), or explicit start_date and end_date."
+            )
+        print(f"window: {window[0].isoformat()} -> {window[1].isoformat()}")
+
         if params.load_type == "INCREMENTAL":
             current_wm = wm.read_watermark(spark, WATERMARK_TABLE, wm.SOURCE_NVD)
-            window = wm.incremental_window(
-                current_wm, started_at, seed_start=parse_utc(params.start_date)
-            )
             print("watermark before run:", current_wm)
-        else:  # BACKFILL
-            window = (parse_utc(params.start_date), parse_utc(params.end_date))
-        print(f"API window: {window[0].isoformat()} -> {window[1].isoformat()}")
+            if current_wm and window[0] > current_wm:
+                print(
+                    f"WARNING: gap of {window[0] - current_wm} between the watermark and this "
+                    "window's start. Records modified in that gap are not in this batch."
+                )
 
-        fetch = nvd_api.fetch_window_to_files(window[0], window[1], LANDING_DIR, api_key=api_key)
-        print(
-            f"fetched {fetch.records} records in {fetch.pages} page(s), "
-            f"{fetch.requests} request(s), totalResults={fetch.total_results}"
-        )
-        source = nvd_api.build_page_url(window[0], window[1], 0)
-        pages = (
-            bronze_nvd.read_nvd_pages(spark, LANDING_DIR)
-            if fetch.pages
-            else spark.createDataFrame([], bronze_nvd.NVD_PAGE_RAW_SCHEMA)
-        )
+        if (manifest or {}).get("records", 1) == 0:
+            pages = spark.createDataFrame([], bronze_nvd.NVD_PAGE_RAW_SCHEMA)
+        else:
+            pages = bronze_nvd.read_nvd_pages(spark, f"{params.source_path}/page_*.json")
 
     raw = bronze_nvd.explode_cves(pages)
     rows_read = raw.count()
@@ -152,10 +151,12 @@ try:
         )
         new_wm = parse_utc(max_modified) if max_modified else window[1]
         wm.write_watermark(spark, WATERMARK_TABLE, wm.SOURCE_NVD, new_wm, params.batch_id)
+        next_start = (new_wm - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S")
         print("watermark after run: ", new_wm)
+        print(f"next fetch:           python scripts/fetch_nvd.py --start {next_start}")
 
-    if fetch is not None and fetch.pages:
-        dbutils.fs.rm(LANDING_DIR, True)  # FinOps: landing files are purged once in Bronze
+    if params.load_type != "FULL" and params.source_path.startswith("/Volumes/"):
+        dbutils.fs.rm(params.source_path, True)  # FinOps: landing files are purged once in Bronze
 
     status = log.STATUS_SUCCESS
 except Exception as exc:  # noqa: BLE001 - logged then re-raised
@@ -169,14 +170,10 @@ finally:
             batch_id=params.batch_id,
             layer=log.LAYER_RAW_TO_BRONZE,
             source=(
-                params.source_path
-                if params.load_type == "FULL"
-                else f"nvd-api {window[0].isoformat()}..{window[1].isoformat()}"
-                if window
-                else "nvd-api (window not computed)"
+                f"{source} [{window[0].isoformat()}..{window[1].isoformat()}]" if window else source
             ),
             load_type=params.load_type,
-            parameters=params.as_dict(),
+            parameters={**params.as_dict(), "manifest": manifest},
             started_at=started_at,
             finished_at=utc_now(),
             status=status,

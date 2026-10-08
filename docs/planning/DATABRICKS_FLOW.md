@@ -7,6 +7,7 @@ where Spark, Delta and the real pipeline run.
 Free Edition facts that shape this plan:
 
 - Compute is **serverless only**. There is no cluster to create or manage.
+- **No outbound internet** from serverless (verified 8 Oct 2026). Acquisition runs on the laptop via `scripts/fetch_*.py`; results are uploaded to the landing volume.
 - Unity Catalog is on. The default catalog is `workspace`.
 - Fair-use quotas exist. Iterate on ten-record samples; run big loads once, deliberately.
 - Git folders are supported. **Each person creates their own Git folder** of the same repo.
@@ -78,9 +79,9 @@ Order of Bronze milestones in Databricks:
 | B1 | `load_type=FULL` reading `data/nvd_full_load_sample.json` from the Git folder | 1 row in `bronze_nvd_raw`, audit row `status=SUCCESS, records_read=10` |
 | B2 | Same run again with a new `batch_id` | 2 rows in Bronze (Bronze is append-only; dedup is Silver's job), same `payload_sha256` on both |
 | B3 | `load_type=FULL, year=2026` real feed into the volume | Audit row with real counts, volume file removed after load |
-| B4 | `load_type=INCREMENTAL` with no dates | Reads watermark, queries API with 10-minute overlap, writes new watermark |
-| B5 | `load_type=BACKFILL, start_date, end_date` | Same code path as B4 with explicit window, watermark untouched |
-| B6 | KEV snapshot via `02_bronze_kev.py` | 1 row per run in `bronze_cisa_raw` with `catalog_version` |
+| B4 | Laptop: `python scripts/fetch_nvd.py`; upload `landing/nvd/<id>` to the volume; notebook `load_type=INCREMENTAL`, `source_path=/Volumes/.../landing/nvd/<id>` | Manifest window used, pages appended, watermark written, next fetch command printed |
+| B5 | Laptop: `fetch_nvd.py --start ... --end ...`; upload; notebook `load_type=BACKFILL` | Explicit window appended, watermark untouched |
+| B6 | Laptop: `python scripts/fetch_kev.py`; upload `landing/kev/<id>`; `02_bronze_kev.py` with `source_path` | 1 row per entry in `bronze_cisa_raw` with `catalog_version` |
 
 ---
 

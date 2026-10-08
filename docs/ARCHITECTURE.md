@@ -113,8 +113,12 @@ does not model yet. Schema inference is never used.
 | `load_timestamp` | TIMESTAMP, not null | UTC instant the batch started |
 
 ### Landing volume `workspace.vulnpulse_bronze.landing`
-Downloaded feed files and API pages are written here (`nvd/<batch_id>/page_00000.json`,
-`kev/<batch_id>/...`), read into Bronze, then deleted once the append succeeded (FinOps rule).
+Free Edition serverless has no outbound internet, so files arrive here from a laptop:
+`scripts/fetch_nvd.py` / `scripts/fetch_kev.py` write `nvd/<batch_id>/page_*.json` or
+`kev/<batch_id>/known_exploited_vulnerabilities.json` plus a `manifest.json` (window start/end, load
+type, source URL, batch id, record count). The folder is uploaded through Catalog Explorer, read into
+Bronze by the notebook, then deleted once the append succeeded (FinOps rule). Yearly feed files for the
+historical FULL load are uploaded the same way.
 
 ---
 

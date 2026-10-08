@@ -6,12 +6,14 @@
 # MAGIC %md
 # MAGIC # 02 · Raw-to-Bronze: CISA KEV
 # MAGIC
-# MAGIC The KEV catalog has no incremental API, so every run is a FULL snapshot of the live feed.
+# MAGIC The KEV catalog has no incremental API, so every run is a FULL snapshot. Free Edition serverless
+# MAGIC cannot reach the internet, so the catalog is downloaded on a laptop with `scripts/fetch_kev.py`
+# MAGIC and uploaded to the landing volume; `source_path` names that folder (or a single JSON file).
 # MAGIC
 # MAGIC | Widget | Meaning |
 # MAGIC |---|---|
-# MAGIC | `source_path` | blank = download the live catalog into the landing volume; or a file path to read instead |
-# MAGIC | `batch_id` | blank = auto |
+# MAGIC | `source_path` | landing folder containing `known_exploited_vulnerabilities.json` (+ `manifest.json`), or a JSON file |
+# MAGIC | `batch_id` | blank = manifest id if present, else auto |
 # MAGIC | `catalog` | Unity Catalog catalog, default `workspace` |
 
 # COMMAND ----------
@@ -25,6 +27,7 @@ if SRC_PATH not in sys.path:
 
 from vulnpulse.audit import execution_log as log  # noqa: E402
 from vulnpulse.bronze import kev as bronze_kev  # noqa: E402
+from vulnpulse.ingestion.landing import read_manifest  # noqa: E402
 from vulnpulse.utils.params import new_batch_id, utc_now  # noqa: E402
 
 spark.conf.set("spark.sql.session.timeZone", "UTC")
@@ -36,15 +39,26 @@ dbutils.widgets.text("batch_id", "")
 dbutils.widgets.text("catalog", "workspace")
 
 CATALOG = dbutils.widgets.get("catalog").strip() or "workspace"
-BATCH_ID = dbutils.widgets.get("batch_id").strip() or new_batch_id()
-SOURCE_PATH = dbutils.widgets.get("source_path").strip() or None
+SOURCE_PATH = dbutils.widgets.get("source_path").strip().rstrip("/")
+if not SOURCE_PATH:
+    raise ValueError(
+        "source_path is required: run scripts/fetch_kev.py on your laptop, upload the folder to "
+        "/Volumes/workspace/vulnpulse_bronze/landing/kev/<batch_id>, and name it here."
+    )
+
+is_folder = not SOURCE_PATH.lower().endswith(".json")
+manifest = read_manifest(SOURCE_PATH) if is_folder else None
+BATCH_ID = dbutils.widgets.get("batch_id").strip() or (manifest or {}).get("batch_id") or new_batch_id()
+READ_PATH = f"{SOURCE_PATH}/known_exploited_vulnerabilities.json" if is_folder else SOURCE_PATH
+SOURCE_URI = (manifest or {}).get("source_uri", SOURCE_PATH)
 
 BRONZE_TABLE = f"{CATALOG}.vulnpulse_bronze.{bronze_kev.BRONZE_KEV_TABLE}"
 LOG_TABLE = f"{CATALOG}.vulnpulse_gold.{log.EXECUTION_LOG_TABLE}"
-LANDING_FILE = f"/Volumes/{CATALOG}/vulnpulse_bronze/landing/kev/{BATCH_ID}/known_exploited_vulnerabilities.json"
 
 print("batch_id:    ", BATCH_ID)
-print("source:      ", SOURCE_PATH or bronze_kev.KEV_URL)
+print("read path:   ", READ_PATH)
+print("source uri:  ", SOURCE_URI)
+print("manifest:    ", manifest or "none")
 print("bronze table:", BRONZE_TABLE)
 
 # COMMAND ----------
@@ -59,20 +73,13 @@ rows_read = rows_written = 0
 error = None
 
 try:
-    if SOURCE_PATH:
-        source_uri, read_path = SOURCE_PATH, SOURCE_PATH
-    else:
-        source_uri = bronze_kev.KEV_URL
-        read_path = bronze_kev.download_catalog(LANDING_FILE)
-        print("downloaded to", read_path)
-
-    catalog_df = bronze_kev.read_catalog(spark, read_path)
+    catalog_df = bronze_kev.read_catalog(spark, READ_PATH)
     entries = bronze_kev.explode_entries(catalog_df)
     rows_read = entries.count()
 
     bronze_df = bronze_kev.to_bronze(
         entries,
-        source_uri=source_uri,
+        source_uri=SOURCE_URI,
         load_type="FULL",
         batch_id=BATCH_ID,
         load_timestamp=started_at,
@@ -80,8 +87,8 @@ try:
     bronze_kev.append(bronze_df, BRONZE_TABLE)
     rows_written = spark.table(BRONZE_TABLE).where(f"batch_id = '{BATCH_ID}'").count()
 
-    if not SOURCE_PATH:
-        dbutils.fs.rm(os.path.dirname(LANDING_FILE), True)
+    if is_folder and SOURCE_PATH.startswith("/Volumes/"):
+        dbutils.fs.rm(SOURCE_PATH, True)  # FinOps: landing files are purged once in Bronze
     status = log.STATUS_SUCCESS
 except Exception as exc:  # noqa: BLE001
     status = log.STATUS_FAILURE
@@ -93,9 +100,9 @@ finally:
             spark,
             batch_id=BATCH_ID,
             layer=log.LAYER_RAW_TO_BRONZE,
-            source=SOURCE_PATH or bronze_kev.KEV_URL,
+            source=SOURCE_URI,
             load_type="FULL",
-            parameters={"source_path": SOURCE_PATH, "catalog": CATALOG, "batch_id": BATCH_ID},
+            parameters={"source_path": SOURCE_PATH, "catalog": CATALOG, "batch_id": BATCH_ID, "manifest": manifest},
             started_at=started_at,
             finished_at=utc_now(),
             status=status,
