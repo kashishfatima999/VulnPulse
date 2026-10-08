@@ -26,10 +26,8 @@
 
 # COMMAND ----------
 
-# MAGIC
-# MAGIC   %load_ext autoreload
-# MAGIC   %autoreload 2
-# MAGIC
+# MAGIC %load_ext autoreload
+# MAGIC %autoreload 2
 
 # COMMAND ----------
 
