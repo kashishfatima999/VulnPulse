@@ -29,3 +29,6 @@ addopts = "-ra --strict-markers"
 markers = [
   "spark: tests that start a local SparkSession (slower; skip with -m 'not spark')",
 ]
+
+[tool.databricks.environment]
+environment_version = '6'
