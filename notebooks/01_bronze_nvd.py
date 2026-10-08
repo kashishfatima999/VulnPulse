@@ -26,6 +26,13 @@
 
 # COMMAND ----------
 
+# MAGIC
+# MAGIC   %load_ext autoreload
+# MAGIC   %autoreload 2
+# MAGIC
+
+# COMMAND ----------
+
 import os
 import sys
 

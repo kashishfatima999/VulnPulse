@@ -18,6 +18,13 @@
 
 # COMMAND ----------
 
+# MAGIC
+# MAGIC %load_ext autoreload
+# MAGIC %autoreload 2
+# MAGIC
+
+# COMMAND ----------
+
 import os
 import sys
 
@@ -34,20 +41,16 @@ spark.conf.set("spark.sql.session.timeZone", "UTC")
 
 # COMMAND ----------
 
+
 dbutils.widgets.text("source_path", "")
 dbutils.widgets.text("batch_id", "")
 dbutils.widgets.text("catalog", "workspace")
 
 CATALOG = dbutils.widgets.get("catalog").strip() or "workspace"
 SOURCE_PATH = dbutils.widgets.get("source_path").strip().rstrip("/")
-if not SOURCE_PATH:
-    raise ValueError(
-        "source_path is required: run scripts/fetch_kev.py on your laptop, upload the folder to "
-        "/Volumes/workspace/vulnpulse_bronze/landing/kev/<batch_id>, and name it here."
-    )
 
 is_folder = not SOURCE_PATH.lower().endswith(".json")
-manifest = read_manifest(SOURCE_PATH) if is_folder else None
+manifest = read_manifest(SOURCE_PATH) if (SOURCE_PATH and is_folder) else None
 BATCH_ID = dbutils.widgets.get("batch_id").strip() or (manifest or {}).get("batch_id") or new_batch_id()
 READ_PATH = f"{SOURCE_PATH}/known_exploited_vulnerabilities.json" if is_folder else SOURCE_PATH
 SOURCE_URI = (manifest or {}).get("source_uri", SOURCE_PATH)
@@ -61,6 +64,7 @@ print("source uri:  ", SOURCE_URI)
 print("manifest:    ", manifest or "none")
 print("bronze table:", BRONZE_TABLE)
 
+
 # COMMAND ----------
 
 bronze_kev.ensure_table(spark, BRONZE_TABLE)
@@ -73,6 +77,12 @@ rows_read = rows_written = 0
 error = None
 
 try:
+    if not SOURCE_PATH:
+        raise ValueError(
+            "source_path is required: run scripts/fetch_kev.py on your laptop, upload the folder to "
+            "/Volumes/workspace/vulnpulse_bronze/landing/kev/<batch_id>, and name it here."
+        )
+
     catalog_df = bronze_kev.read_catalog(spark, READ_PATH)
     entries = bronze_kev.explode_entries(catalog_df)
     rows_read = entries.count()
@@ -115,6 +125,7 @@ finally:
     )
 
 print(f"{status}: read {rows_read}, wrote {rows_written} rows to {BRONZE_TABLE}")
+
 
 # COMMAND ----------
 
