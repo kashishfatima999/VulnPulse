@@ -147,7 +147,9 @@ VulnPulse/
 ├── notebooks/                        # Thin Databricks notebooks (source format). RUN THESE.
 │   ├── 00_setup_catalog.py           # Once: creates vulnpulse_bronze/silver/gold schemas + landing volume
 │   ├── 01_bronze_nvd.py              # Raw-to-Bronze NVD: FULL / INCREMENTAL / BACKFILL from a landing folder
-│   └── 02_bronze_kev.py              # Raw-to-Bronze CISA KEV: full snapshot from a landing folder
+│   ├── 02_bronze_kev.py              # Raw-to-Bronze CISA KEV: full snapshot from a landing folder
+│   ├── 03_silver.py                  # Bronze-to-Silver NVD + KEV: transform, quarantine, dedup, MERGE, audit
+│   └── 99_failure_drills.py          # Demo only: Silver failure drills D1-D4 on scratch copies of the tables
 ├── src/vulnpulse/                    # Production code, imported by notebooks and tests. Never run directly.
 │   ├── schemas/
 │   │   ├── nvd.py                    # Explicit StructTypes for NVD pages (raw envelope) and typed CVE records
@@ -158,6 +160,13 @@ VulnPulse/
 │   ├── bronze/
 │   │   ├── nvd.py                    # Read NVD files, one row per CVE, attach metadata, append to Delta
 │   │   └── kev.py                    # Download KEV catalog, one row per entry, append to Delta
+│   ├── silver/
+│   │   ├── ddl.py                    # Silver StructTypes + idempotent CREATE TABLE (silver_cve, silver_kev, quarantine)
+│   │   ├── transform.py              # NVD raw_json -> typed silver_cve rows: UTC timestamps, CVSS v3.1/v3.0, PII rule
+│   │   ├── kev.py                    # KEV raw_json -> typed silver_kev rows: DATE casts
+│   │   ├── quality.py                # Quarantine rules and the valid / quarantine split, with reasons
+│   │   ├── merge.py                  # Dedup on the key (latest wins), MERGE INTO, insert-only quarantine MERGE
+│   │   └── params.py                 # Silver run parameters: catalog, batch_id / date-window backfill filters
 │   ├── audit/
 │   │   └── execution_log.py          # pipeline_execution_logs table: one row per run per layer
 │   └── utils/
@@ -172,7 +181,9 @@ VulnPulse/
 │   ├── test_watermark.py             # Incremental window rules
 │   ├── test_bronze_kev.py            # KEV explode + Bronze schema
 │   ├── test_landing.py               # Manifest round-trip, CLI window rules
-│   └── test_sample_payloads.py       # Phase 1 sample shape checks
+│   ├── test_sample_payloads.py       # Phase 1 sample shape checks
+│   ├── test_silver_nvd.py            # Silver NVD: casts, UTC, PII rule, CVSS pick, drift, quarantine, dedup
+│   └── test_silver_kev.py            # Silver KEV casts + dedup; Silver run parameters and backfill filters
 ├── scripts/                          # Laptop-side tooling (Free Edition serverless has no internet)
 │   ├── fetch_nvd.py                  # Fetch an NVD window (incremental or backfill) into landing/
 │   ├── fetch_kev.py                  # Download the KEV catalog into landing/
@@ -250,7 +261,7 @@ Status: Raw-to-Bronze and Bronze-to-Silver are implemented for both sources (NVD
 | `load_timestamp` on every record | Every Bronze, Silver and operational row carries `load_timestamp` (UTC). Silver rows also carry the Bronze `batch_id` they came from. | `BRONZE_NVD_SCHEMA`, `BRONZE_KEV_SCHEMA`, `EXECUTION_LOG_SCHEMA` |
 | Idempotent execution with `MERGE INTO` | Bronze is append-only with a per-record `payload_sha256`. Silver deduplicates on `cve_id` (latest `last_modified_at` wins, deterministic tie-breakers), then `MERGE INTO ... ON cve_id`, updating a matched row only when the source is strictly newer. Quarantine is written with an insert-only MERGE. Verified in Databricks: `silver_cve` first run inserted 1,580 / updated 0, second run on the same Bronze inserted 0 / updated 0; `silver_kev` 1,734 then 0 / 0. | `src/vulnpulse/silver/merge.py`, `docs/EVIDENCE.md` (S2, S3, K1, K2) |
 | Parameterised backfills | One notebook, three modes chosen by widgets or job parameters: FULL (any file or folder), INCREMENTAL (landing folder from the watermark), BACKFILL (landing folder for any explicit window; `fetch_nvd.py --start --end`). No hardcoded dates, paths or table names; the manifest carries the window. | `notebooks/01_bronze_nvd.py`, `scripts/fetch_nvd.py`, `src/vulnpulse/utils/params.py` |
-| Schema drift handling | Raw preservation means a new source field is never lost. Known-key sets flag unmodelled fields; the samples already exposed two real cases (`affected` in NVD, `forensicTriage` in KEV). Silver compares each record's top-level keys with the known-key set and records new ones in the run's audit `parameters` (`schema_drift_keys`) without failing; a changed type is absorbed by `try_` casts; a record that still cannot be conformed (missing or malformed id, unparseable date) goes to `silver_quarantine` with a `reason` and the batch continues. Drill D1 to D4 verified this in Databricks. | `src/vulnpulse/silver/quality.py`, `NVD_CVE_KNOWN_KEYS`, `KEV_KNOWN_KEYS`, `tests/test_silver_*.py` |
+| Schema drift handling | Raw preservation means a new source field is never lost. Known-key sets flag unmodelled fields; the samples already exposed two real cases (`affected` in NVD, `forensicTriage` in KEV). Silver compares each record's top-level keys with the known-key set and records new ones in the run's audit `parameters` (`schema_drift_keys`) without failing; a changed type is absorbed by `try_` casts; a record that still cannot be conformed (missing or malformed id, unparseable date) goes to `silver_quarantine` with a `reason` and the batch continues. Drills D1 to D4 (`notebooks/99_failure_drills.py`, on scratch copies of the tables) verified this in Databricks. | `src/vulnpulse/silver/quality.py`, `NVD_CVE_KNOWN_KEYS`, `KEV_KNOWN_KEYS`, `tests/test_silver_*.py` |
 | Dedicated logging tables and audit metrics | `pipeline_execution_logs` records layer, source and parameters, start and end time, status, rows read / inserted / updated / quarantined and the error message. It is written in a `finally` block so failures are logged too. `pipeline_watermarks` keeps incremental state with history. | `src/vulnpulse/audit/execution_log.py`, `src/vulnpulse/utils/watermark.py` |
 | Execution guide | Below. | this README |
 
