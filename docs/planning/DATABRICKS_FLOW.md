@@ -27,6 +27,22 @@ Free Edition facts that shape this plan:
 Test the Git connection: edit nothing, click **Pull** in the Git folder. If it pulls without an
 auth error, the token works.
 
+**Teammate access to the catalog (owner runs once).** Workspace sharing and Unity Catalog are two
+separate permission systems. Adding a user to the workspace does not let them read or write the
+`vulnpulse_*` schemas. The owner grants that in the SQL Editor (Serverless Starter Warehouse):
+
+```sql
+GRANT USE CATALOG ON CATALOG workspace TO `teammate@example.com`;
+GRANT ALL PRIVILEGES ON SCHEMA workspace.vulnpulse_bronze TO `teammate@example.com`;
+GRANT ALL PRIVILEGES ON SCHEMA workspace.vulnpulse_silver TO `teammate@example.com`;
+GRANT ALL PRIVILEGES ON SCHEMA workspace.vulnpulse_gold   TO `teammate@example.com`;
+```
+
+Schema privileges are inherited by every table and volume inside, including ones created later.
+`CREATE SCHEMA` on the catalog is deliberately not granted: the schemas already exist and only the
+owner runs `00_setup_catalog`. Verify with `SHOW GRANTS \`teammate@example.com\` ON SCHEMA
+workspace.vulnpulse_bronze;`.
+
 ---
 
 ## Stage 1: Kashish, workspace layout
