@@ -90,8 +90,10 @@ try:
     cve_counts = merge.merge_upsert(
         spark, latest, CVE_TABLE, key="cve_id", update_condition=merge.CVE_UPDATE_CONDITION
     )
-    q_counts = merge.merge_quarantine(spark, bad, QUARANTINE_TABLE)
     inserted, updated = cve_counts["inserted"], cve_counts["updated"]
+    # Counts recorded before the quarantine MERGE: if that step fails, the audit row still
+    # reports what the CVE MERGE actually did (incident 9 Oct 2026, see docs/EVIDENCE.md).
+    q_counts = merge.merge_quarantine(spark, bad, QUARANTINE_TABLE)
     quarantined = q_counts["inserted"]
     status = log.STATUS_SUCCESS
 except Exception as exc:  # noqa: BLE001 - logged then re-raised
@@ -173,8 +175,10 @@ try:
     kev_counts = merge.merge_upsert(
         spark, latest, KEV_TABLE, key="cve_id", update_condition=merge.KEV_UPDATE_CONDITION
     )
-    q_counts = merge.merge_quarantine(spark, bad, QUARANTINE_TABLE)
     inserted, updated = kev_counts["inserted"], kev_counts["updated"]
+    # Counts recorded before the quarantine MERGE: if that step fails, the audit row still
+    # reports what the CVE MERGE actually did (incident 9 Oct 2026, see docs/EVIDENCE.md).
+    q_counts = merge.merge_quarantine(spark, bad, QUARANTINE_TABLE)
     quarantined = q_counts["inserted"]
     status = log.STATUS_SUCCESS
 except Exception as exc:  # noqa: BLE001 - logged then re-raised
