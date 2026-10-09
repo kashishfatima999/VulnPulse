@@ -39,10 +39,14 @@ All runs on 8 Oct 2026 in `notebooks/03_silver`, serverless, against the Bronze 
 |---|---|---|---|---|
 | S1 | Silver DDL (`ddl.ensure_tables`), run twice | Explicit types and keys, `load_timestamp` and `batch_id` on every table; DDL is re-runnable | 3 tables created; second run no-op; `DESCRIBE` shows TIMESTAMP / DOUBLE / BOOLEAN columns | `evidence/s1_silver_ddl.png` |
 | S1b | Transform preview over all Bronze | Casting and flattening | 1,610 rows, 1,580 distinct CVEs, 0 null ids / published / last_modified, 159 null v3 scores (v2-only or unscored CVEs), 0 drift keys | `evidence/s1b_transform_preview.png` |
-| S2 | `03_silver` NVD, first run | Dedup + `MERGE INTO` | read 1,610, inserted 1,580, updated 0, quarantined 0; `silver_cve` 1,580 rows = 1,580 distinct | `evidence/s2_first_run.png` |
-| S3 | Same run again, same Bronze | Idempotency | read 1,610, **inserted 0, updated 0**, quarantined 0; still 1,580 rows | `evidence/s3_second_run.png` |
+| S2 | `03_silver` NVD, first run | Dedup + `MERGE INTO` | read 1,610, inserted 1,580, updated 0, quarantined 0; `silver_cve` 1,580 rows = 1,580 distinct | `evidence/s2_first_run.png` (older audit row, bottom) |
+| S3 | Same run again, same Bronze | Idempotency | read 1,610, **inserted 0, updated 0**, quarantined 0; still 1,580 rows | `evidence/s3_second_run.png` (newer audit row, top) |
 | K1 | `03_silver` KEV, first run | Second source through the same path | read 1,734, inserted 1,734, updated 0, quarantined 0; dates 2021-11-03 to 2026-10-04 | `evidence/k1_kev_first_run.png` |
 | K2 | KEV again | Idempotency | **inserted 0, updated 0**, quarantined 0 | `evidence/k2_kev_second_run.png` |
+
+Note: on 8 Oct the S2 and S3 audit rows share one `batch_id`, because the run id was minted once in
+the parameter cell and the run cell was executed twice. Since 9 Oct each execution of a run cell mints
+its own id, so every audit row is unique.
 
 ## Environment finding: no outbound internet on Free Edition serverless
 
@@ -61,6 +65,11 @@ notebooks read the folder from the volume and never call the network. The first 
 stays in `pipeline_execution_logs` as evidence that failures are logged with their error.
 
 ## Failure drills
+
+Silver drills D1 to D4 run in `notebooks/99_failure_drills.py` against scratch copies
+(`drill_silver_cve`, `drill_silver_quarantine`) so production Silver is never modified. They were
+first run on 8 Oct 2026 as the last cell of `03_silver` and moved to their own notebook afterwards;
+the code is unchanged.
 
 | Drill | Expected | Observed | Evidence |
 |---|---|---|---|
