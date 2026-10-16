@@ -126,6 +126,67 @@ for name, builder in (
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## 3. CVE core: `dim_cve` and `fact_cve` (MERGE, idempotent)
+# MAGIC
+# MAGIC Reads `silver_cve` and `silver_kev`. If Zahra's `silver_affected_product` / `silver_cwe` tables
+# MAGIC exist yet, their per-CVE counts are attached; otherwise the count columns stay NULL. Session 3
+# MAGIC adds the Gold watermark so only changed CVEs are processed in `incremental` mode.
+
+# COMMAND ----------
+
+from vulnpulse.gold import cve as gold_cve  # noqa: E402
+from vulnpulse.gold import merge as gold_merge  # noqa: E402
+
+silver_cve = spark.table(f"{SILVER}.silver_cve")
+silver_kev = spark.table(f"{SILVER}.silver_kev")
+
+
+def optional_counts(table: str):
+    fqn = f"{SILVER}.{table}"
+    if spark.catalog.tableExists(fqn):
+        print(f"child counts from {fqn}")
+        return gold_cve.count_per_cve(spark.table(fqn))
+    print(f"{fqn} not present yet; count column will be NULL")
+    return None
+
+
+product_counts = optional_counts("silver_affected_product")
+cwe_counts = optional_counts("silver_cwe")
+
+rows_in = silver_cve.count()
+print(f"silver_cve rows read: {rows_in}; silver_kev rows: {silver_kev.count()}")
+
+# COMMAND ----------
+
+for name, build in (
+    ("dim_cve", lambda ts: gold_cve.build_dim_cve(silver_cve, silver_kev, batch_id=RUN_ID, load_timestamp=ts)),
+    (
+        "fact_cve",
+        lambda ts: gold_cve.build_fact_cve(
+            silver_cve,
+            silver_kev,
+            batch_id=RUN_ID,
+            load_timestamp=ts,
+            product_counts=product_counts,
+            cwe_counts=cwe_counts,
+        ),
+    ),
+):
+    started = utc_now()
+    error = None
+    counts = {}
+    try:
+        counts = gold_merge.merge_gold(spark, build(started), tables[name], keys=["cve_id"])
+        print(f"{name}: read {rows_in}, inserted {counts['inserted']}, updated {counts['updated']}")
+    except Exception as exc:  # noqa: BLE001 - logged then re-raised
+        error = f"{type(exc).__name__}: {exc}"[:2000]
+        raise
+    finally:
+        log_gold_write(tables[name], started, rows_in, counts, error)
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Results
 
 # COMMAND ----------
@@ -133,6 +194,31 @@ for name, builder in (
 display(
     spark.sql(f"SHOW TABLES IN {GOLD}").select("tableName", "isTemporary").orderBy("tableName")
 )
+
+# COMMAND ----------
+
+display(
+    spark.sql(
+        f"""
+        SELECT s.severity, count(*) AS cves, sum(f.is_exploited) AS exploited,
+               round(avg(f.cvss_v3_score), 2) AS avg_score
+        FROM {GOLD}.fact_cve f JOIN {GOLD}.dim_severity s ON s.severity_key = f.severity_key
+        GROUP BY s.severity, s.sort_order ORDER BY s.sort_order
+        """
+    )
+)
+display(
+    spark.sql(
+        f"""
+        SELECT count(*) AS fact_rows, count(DISTINCT cve_id) AS distinct_cves,
+               sum(is_exploited) AS in_kev, sum(is_ransomware) AS ransomware,
+               percentile_approx(days_to_kev, 0.5) AS median_days_to_kev,
+               min(days_to_kev) AS min_days_to_kev, max(days_to_kev) AS max_days_to_kev
+        FROM {GOLD}.fact_cve
+        """
+    )
+)
+display(spark.sql(f"SELECT count(*) AS watchlist_rows FROM {GOLD}.{ddl.WATCHLIST_VIEW}"))
 
 # COMMAND ----------
 
