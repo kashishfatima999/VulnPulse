@@ -1,0 +1,4 @@
+table,cluster_by,files_before,files_after,mb_before,mb_after,seconds,optimize_metrics
+fact_cve,"published_date_key, severity_key",1,1,0.27,0.27,10.3,"Row(numFilesAdded=0, numFilesRemoved=0, filesAdded=Row(min=None, max=None, avg=0.0, totalFiles=0, totalSize=0), filesRemoved=Row(min=None, max=None, avg=0.0, totalFiles=0, totalSize=0), partitionsOpti"
+fact_cve_product,vendor_product_key,0,0,0,0,2.7,"Row(numFilesAdded=0, numFilesRemoved=0, filesAdded=Row(min=None, max=None, avg=0.0, totalFiles=0, totalSize=0), filesRemoved=Row(min=None, max=None, avg=0.0, totalFiles=0, totalSize=0), partitionsOpti"
+fact_cve_cwe,cwe_key,0,0,0,0,2.5,"Row(numFilesAdded=0, numFilesRemoved=0, filesAdded=Row(min=None, max=None, avg=0.0, totalFiles=0, totalSize=0), filesRemoved=Row(min=None, max=None, avg=0.0, totalFiles=0, totalSize=0), partitionsOpti"
