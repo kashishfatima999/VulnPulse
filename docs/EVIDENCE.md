@@ -14,6 +14,7 @@ Exports so far:
 | `evidence/01_bronze_nvd.html` | Databricks notebook export with outputs: the INCREMENTAL run of 9 Oct (watermark before/after, next-fetch command, batch summary, watermark table) |
 | `evidence/03_silver.html` | Databricks notebook export with outputs: Bronze-to-Silver run for NVD and KEV with MERGE counts, drift keys and audit rows |
 | Screen recording | https://youtu.be/Q1Pq-MEYE0o (unlisted, about 5 min): schemas, live BACKFILL, Silver re-run with 0/0, drift and quarantine, log table |
+| `evidence/silver_to_gold_logs_2026-10-16.csv` | Phase 3 session 1: two `04_gold` runs, `Silver-to-Gold` rows for `dim_date` (15,706) and `dim_severity` (6), identical counts on the re-run |
 
 How to capture an audit row after any run:
 
@@ -53,6 +54,21 @@ All runs on 8 Oct 2026 in `notebooks/03_silver`, serverless, against the Bronze 
 Note: on 8 Oct the S2 and S3 audit rows share one `batch_id`, because the run id was minted once in
 the parameter cell and the run cell was executed twice. Since 9 Oct each execution of a run cell mints
 its own id, so every audit row is unique.
+
+## Gold milestones (Phase 3)
+
+Plan and decision log: `docs/planning/PHASE3_PLAN.md`. All runs in `notebooks/04_gold`, serverless.
+
+| # | Run | What it proves | Observed | Evidence |
+|---|---|---|---|---|
+| G1 | `04_gold` first run, 16 Oct 2026, run `20261016T161439Z-34bfd7e0` | Star schema DDL is explicit and idempotent: 8 tables created with `CLUSTER BY` on the three facts; 8 PK and 14 FK informational constraints accepted by Unity Catalog; `gold_watchlist_v` created; `dim_date` and `dim_severity` generated and logged | 8 `table ready`, 22 `constraint ... added`, `dim_date: 15706 rows written`, `dim_severity: 6 rows written`; 1988 has 366 days and 105 weekend days; two `Silver-to-Gold` SUCCESS rows | `evidence/g1_gold_first_run.png`, `evidence/silver_to_gold_logs_2026-10-16.csv` |
+| G1b | Same notebook again, run `20261016T183725Z-4eb32057` | Re-running the DDL and static dimensions changes nothing: constraints report `exists`, same 15,706 and 6 rows, two more log rows with the same counts | Identical counts in the log export | `evidence/g1_gold_second_run_idempotent.png` |
+| G2 | `dim_cve` and `fact_cve` via MERGE, re-run shows 0 / 0 | SCD1 dimension and CVE-grain fact; days to KEV; idempotent | | |
+| G3 | Gold watermark, `mode=incremental` after a Bronze load touches only changed CVEs; `mode=full` rebuilds | Incremental Gold refresh linked to Silver | | |
+| G4 | Databricks Job `vulnpulse_pipeline`, four tasks, one green run | Bronze → Silver → Gold automation | | |
+| G5 | `OPTIMIZE` on facts; `DESCRIBE DETAIL` before and after | Read optimisation with liquid clustering | | |
+| G6 (Zahra) | `silver_affected_product`, `silver_cwe`, `dim_vendor_product`, `dim_cwe`, `fact_cve_product`, `fact_cve_cwe` | Product and CWE arms of the star | | |
+| G7 (Zahra) | Power BI model view and two dashboard pages | Semantic layer mirrors the star | | |
 
 ## Environment finding: no outbound internet on Free Edition serverless
 
