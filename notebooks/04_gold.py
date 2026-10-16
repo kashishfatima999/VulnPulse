@@ -253,6 +253,51 @@ display(spark.table(WATERMARK_TABLE).orderBy("load_timestamp", ascending=False).
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ## 4. Read optimisation (session 4)
+# MAGIC
+# MAGIC Facts are created with liquid clustering (`CLUSTER BY`). `OPTIMIZE` compacts small files written by
+# MAGIC many MERGEs and clusters data by the declared keys. Runs only when `optimize = yes`, because it is
+# MAGIC a maintenance step, not part of every refresh. Before/after file counts are the evidence.
+
+# COMMAND ----------
+
+dbutils.widgets.dropdown("optimize", "no", ["no", "yes"])
+
+if dbutils.widgets.get("optimize") == "yes":
+    rows = []
+    for name, t in ddl.TABLES.items():
+        if t.kind != "fact":
+            continue
+        fqn = tables[name]
+        before = spark.sql(f"DESCRIBE DETAIL {fqn}").select("numFiles", "sizeInBytes").first()
+        started = utc_now()
+        metrics = spark.sql(f"OPTIMIZE {fqn}").first()
+        after = spark.sql(f"DESCRIBE DETAIL {fqn}").select("numFiles", "sizeInBytes").first()
+        rows.append(
+            (
+                name,
+                ", ".join(t.cluster_by),
+                before["numFiles"],
+                after["numFiles"],
+                round(before["sizeInBytes"] / 1e6, 2),
+                round(after["sizeInBytes"] / 1e6, 2),
+                round((utc_now() - started).total_seconds(), 1),
+                str(metrics["metrics"])[:200] if "metrics" in metrics.asDict() else "",
+            )
+        )
+    display(
+        spark.createDataFrame(
+            rows,
+            "table string, cluster_by string, files_before int, files_after int, "
+            "mb_before double, mb_after double, seconds double, optimize_metrics string",
+        )
+    )
+else:
+    print("optimize = no; set the widget to yes to compact and cluster the fact tables")
+
+# COMMAND ----------
+
 display(
     spark.table(tables["dim_date"])
     .groupBy("year")
