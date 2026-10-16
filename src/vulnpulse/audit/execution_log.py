@@ -17,6 +17,7 @@ EXECUTION_LOG_TABLE = "pipeline_execution_logs"
 
 LAYER_RAW_TO_BRONZE = "Raw-to-Bronze"
 LAYER_BRONZE_TO_SILVER = "Bronze-to-Silver"
+LAYER_SILVER_TO_GOLD = "Silver-to-Gold"
 
 STATUS_SUCCESS = "SUCCESS"
 STATUS_FAILURE = "FAILURE"
