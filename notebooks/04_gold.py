@@ -128,25 +128,44 @@ for name, builder in (
 # MAGIC %md
 # MAGIC ## 3. CVE core: `dim_cve` and `fact_cve` (MERGE, idempotent)
 # MAGIC
-# MAGIC Reads `silver_cve` and `silver_kev`. If Zahra's `silver_affected_product` / `silver_cwe` tables
-# MAGIC exist yet, their per-CVE counts are attached; otherwise the count columns stay NULL. Session 3
-# MAGIC adds the Gold watermark so only changed CVEs are processed in `incremental` mode.
+# MAGIC Reads `silver_cve` and `silver_kev` (and `silver_affected_product` / `silver_cwe` for per-CVE
+# MAGIC counts when they exist). In `incremental` mode only CVEs with Silver rows loaded after the Gold
+# MAGIC watermark are rebuilt; `full` mode (or the first run) rebuilds every CVE. The watermark advances
+# MAGIC only after all MERGEs succeed.
 
 # COMMAND ----------
 
 from vulnpulse.gold import cve as gold_cve  # noqa: E402
 from vulnpulse.gold import merge as gold_merge  # noqa: E402
+from vulnpulse.gold import run as gold_run  # noqa: E402
+from vulnpulse.utils import watermark as wm  # noqa: E402
 
-silver_cve = spark.table(f"{SILVER}.silver_cve")
-silver_kev = spark.table(f"{SILVER}.silver_kev")
+WATERMARK_TABLE = f"{GOLD}.{wm.WATERMARK_TABLE}"
+wm.ensure_table(spark, WATERMARK_TABLE)
+
+silver_frames = gold_run.existing_silver_frames(spark, SILVER)
+print("silver tables present:", ", ".join(silver_frames))
+silver_cve_all = silver_frames["silver_cve"]
+silver_kev = silver_frames["silver_kev"]
+
+# Scope: in incremental mode only CVEs touched in Silver since the Gold watermark.
+gold_wm = gold_run.read_gold_watermark(spark, WATERMARK_TABLE)
+print("gold watermark before run:", gold_wm)
+if MODE == "full" or gold_wm is None:
+    changed = None
+    print("scope: all CVEs", "(full rebuild)" if MODE == "full" else "(first run, no watermark yet)")
+else:
+    changed = gold_run.changed_cve_ids(list(silver_frames.values()), since=gold_wm)
+    print(f"scope: {changed.count()} CVEs with Silver changes after the watermark")
+
+silver_cve = gold_run.scope_to(silver_cve_all, changed)
 
 
 def optional_counts(table: str):
-    fqn = f"{SILVER}.{table}"
-    if spark.catalog.tableExists(fqn):
-        print(f"child counts from {fqn}")
-        return gold_cve.count_per_cve(spark.table(fqn))
-    print(f"{fqn} not present yet; count column will be NULL")
+    if table in silver_frames:
+        print(f"child counts from {SILVER}.{table}")
+        return gold_cve.count_per_cve(gold_run.scope_to(silver_frames[table], changed))
+    print(f"{SILVER}.{table} not present yet; count column will be NULL")
     return None
 
 
@@ -154,7 +173,7 @@ product_counts = optional_counts("silver_affected_product")
 cwe_counts = optional_counts("silver_cwe")
 
 rows_in = silver_cve.count()
-print(f"silver_cve rows read: {rows_in}; silver_kev rows: {silver_kev.count()}")
+print(f"silver_cve rows in scope: {rows_in}; silver_kev rows: {silver_kev.count()}")
 
 # COMMAND ----------
 
@@ -183,6 +202,14 @@ for name, build in (
         raise
     finally:
         log_gold_write(tables[name], started, rows_in, counts, error)
+
+# Advance the Gold watermark only now, after every MERGE above succeeded (contract rule 24).
+new_wm = gold_run.max_load_timestamp(list(silver_frames.values()))
+if new_wm is not None and (gold_wm is None or new_wm > gold_wm):
+    gold_run.write_gold_watermark(spark, WATERMARK_TABLE, new_wm, RUN_ID)
+    print("gold watermark after run: ", new_wm)
+else:
+    print("gold watermark unchanged:  ", gold_wm, "(no newer Silver rows)")
 
 # COMMAND ----------
 
@@ -219,6 +246,10 @@ display(
     )
 )
 display(spark.sql(f"SELECT count(*) AS watchlist_rows FROM {GOLD}.{ddl.WATCHLIST_VIEW}"))
+
+# COMMAND ----------
+
+display(spark.table(WATERMARK_TABLE).orderBy("load_timestamp", ascending=False).limit(10))
 
 # COMMAND ----------
 

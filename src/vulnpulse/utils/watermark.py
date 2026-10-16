@@ -78,13 +78,15 @@ def read_watermark(spark: SparkSession, table_fqn: str, source: str) -> datetime
     value = row["wm"] if row else None
     if value is None:
         return None
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    # Spark returns a naive datetime in the machine's local zone; astimezone() converts it exactly.
+    return value.astimezone(timezone.utc)
 
 
 def write_watermark(
     spark: SparkSession, table_fqn: str, source: str, watermark: datetime, batch_id: str
 ) -> None:
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    wm = watermark.astimezone(timezone.utc).replace(tzinfo=None) if watermark.tzinfo else watermark
+    # Hand Spark tz-aware instants; a naive datetime would be interpreted in the local zone.
+    now = datetime.now(timezone.utc)
+    wm = watermark.astimezone(timezone.utc)
     df = spark.createDataFrame([(source, wm, batch_id, now)], schema=WATERMARK_SCHEMA)
     df.write.format("delta").mode("append").saveAsTable(table_fqn)
