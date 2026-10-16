@@ -15,6 +15,7 @@ Exports so far:
 | `evidence/03_silver.html` | Databricks notebook export with outputs: Bronze-to-Silver run for NVD and KEV with MERGE counts, drift keys and audit rows |
 | Screen recording | https://youtu.be/Q1Pq-MEYE0o (unlisted, about 5 min): schemas, live BACKFILL, Silver re-run with 0/0, drift and quarantine, log table |
 | `evidence/silver_to_gold_logs_2026-10-16.csv` | Phase 3 session 1: two `04_gold` runs, `Silver-to-Gold` rows for `dim_date` (15,706) and `dim_severity` (6), identical counts on the re-run |
+| `evidence/silver_to_gold_logs_2026-10-17.csv` | Phase 3 sessions 1 and 2: four `04_gold` runs; adds `dim_cve` and `fact_cve` first build (25,777 inserted each) and the re-run (0 / 0) |
 
 How to capture an audit row after any run:
 
@@ -63,7 +64,8 @@ Plan and decision log: `docs/planning/PHASE3_PLAN.md`. All runs in `notebooks/04
 |---|---|---|---|---|
 | G1 | `04_gold` first run, 16 Oct 2026, run `20261016T161439Z-34bfd7e0` | Star schema DDL is explicit and idempotent: 8 tables created with `CLUSTER BY` on the three facts; 8 PK and 14 FK informational constraints accepted by Unity Catalog; `gold_watchlist_v` created; `dim_date` and `dim_severity` generated and logged | 8 `table ready`, 22 `constraint ... added`, `dim_date: 15706 rows written`, `dim_severity: 6 rows written`; 1988 has 366 days and 105 weekend days; two `Silver-to-Gold` SUCCESS rows | `evidence/g1_gold_first_run.png`, `evidence/silver_to_gold_logs_2026-10-16.csv` |
 | G1b | Same notebook again, run `20261016T183725Z-4eb32057` | Re-running the DDL and static dimensions changes nothing: constraints report `exists`, same 15,706 and 6 rows, two more log rows with the same counts | Identical counts in the log export | `evidence/g1_gold_second_run_idempotent.png` |
-| G2 | `dim_cve` and `fact_cve` via MERGE, re-run shows 0 / 0 | SCD1 dimension and CVE-grain fact; days to KEV; idempotent | | |
+| G2 | `04_gold` with section 3, 16 Oct 2026 19:12 UTC, run `20261016T191235Z-8b2b0e2c` | `dim_cve` (SCD1) and `fact_cve` (CVE grain: date keys, severity key, exploitation and ransomware flags, days to KEV) built from `silver_cve` left-joined to `silver_kev` and written with a change-aware MERGE | `silver_cve rows read: 25777`; `dim_cve: inserted 25777, updated 0`; `fact_cve: inserted 25777, updated 0`; `fact_rows = distinct_cves`; two `Silver-to-Gold` SUCCESS rows, 11 s and 7 s | `evidence/g2_cve_core_first_run.pdf`, `evidence/silver_to_gold_logs_2026-10-17.csv` |
+| G2b | Same notebook again, run `20261016T191618Z-0feb9b60` | Gold idempotency: the MERGE updates only when a business column differs (`batch_id` and `load_timestamp` excluded), so an unchanged Silver yields no writes | `dim_cve: inserted 0, updated 0`; `fact_cve: inserted 0, updated 0`; static dims rewritten with identical counts | `evidence/g2_cve_core_second_run_idempotent.pdf` |
 | G3 | Gold watermark, `mode=incremental` after a Bronze load touches only changed CVEs; `mode=full` rebuilds | Incremental Gold refresh linked to Silver | | |
 | G4 | Databricks Job `vulnpulse_pipeline`, four tasks, one green run | Bronze → Silver → Gold automation | | |
 | G5 | `OPTIMIZE` on facts; `DESCRIBE DETAIL` before and after | Read optimisation with liquid clustering | | |
