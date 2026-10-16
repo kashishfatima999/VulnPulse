@@ -397,7 +397,7 @@ Everything in the table can also be reproduced by following the Execution Guide 
 
 - **Phase 1 (Completed):** Proposal document, domain and source identification, sample payloads, Medallion architecture model, FinOps plan, and repository initialization.
 - **Phase 2 (Done, due 10 Oct 2026):** Raw-to-Bronze for NVD (full, incremental, backfill) and CISA KEV with explicit schemas, audit logging and watermarks. Bronze-to-Silver with casting, dedup + `MERGE INTO`, quarantine, schema-drift logging and audit for both sources.
-- **Phase 3:** Gold aggregate tables, Power BI business intelligence dashboard, and final documentation.
+- **Phase 3 (In progress, due 24 Oct 2026):** Gold star schema (5 dimensions, 3 facts, watchlist view), Databricks Job linking Bronze → Silver → Gold, Power BI dashboard, and the final architecture and FinOps report. Plan and decision log: [`docs/planning/PHASE3_PLAN.md`](docs/planning/PHASE3_PLAN.md); requirements: [`docs/requirements/phase3.txt`](docs/requirements/phase3.txt).
 
 ---
 

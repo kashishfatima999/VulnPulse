@@ -41,6 +41,22 @@ that breaks one of these rules is not mergeable, even if it runs.
     records_read, records_written, and an error message when it failed.
 15. Every Silver MERGE records inserted, updated, rejected and quarantined counts.
 
+## Gold (Phase 3)
+
+21. Gold is a star schema: dimension tables and fact tables with declared primary and foreign keys.
+    No Gold table is a copy of a Silver table, and Gold never parses `raw_json`; it reads Silver only.
+22. Every Gold row carries `batch_id` (the Gold run id) and `load_timestamp` (UTC).
+23. Gold writes are `MERGE INTO` (SCD type 1 for dimensions, upsert on the declared key for facts).
+    Static dimensions (`dim_date`, `dim_severity`) may be overwritten idempotently. Running Gold twice
+    on unchanged Silver changes nothing.
+24. Gold is refreshed from a watermark on Silver `load_timestamp` (`pipeline_watermarks`, source
+    `gold_from_silver`), advanced only after success. `mode=full` rebuilds everything and is the backfill.
+25. Every Gold table write logs a `Silver-to-Gold` row in `pipeline_execution_logs` with the target
+    table as `source`, rows read (aggregated), inserted, updated, start and end times.
+26. Bronze → Silver → Gold runs as one Databricks Job. Notebooks remain individually runnable.
+27. The BI model reads `workspace.vulnpulse_gold` only. Warehouse credentials live in Power BI's
+    credential store, never in the `.pbix`, never in Git.
+
 ## Security and repository hygiene
 
 16. No API keys, tokens or passwords in code, notebooks, config files or commit messages. Use
