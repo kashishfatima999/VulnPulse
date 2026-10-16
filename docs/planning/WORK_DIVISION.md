@@ -98,3 +98,62 @@ roughly one task row each. Pull `main` into your branch every morning.
 3. At least one pytest covers it and passes locally with `pytest`.
 4. It has run once in Databricks on the ten-record sample without manual edits.
 5. The PR description says what to run and what the output should look like.
+
+---
+
+# Phase 3 Work Division (16 to 24 October 2026)
+
+Full design, decisions and schedule: [`PHASE3_PLAN.md`](PHASE3_PLAN.md). Ownership follows the Phase 2
+pattern: Kashish owns the Gold core, automation and the engineering half of the report; Zahra owns the
+Silver extensions, the product and CWE arms of the star, the BI dashboard and the modelling half of
+the report. Both review each other's PRs.
+
+| Phase | Task | Owner | Dependency | Deliverable | Notebook / File |
+|---|---|---|---|---|---|
+| 3.0 Plan | Phase 3 plan, decision log, this division | Kashish | none | Merged to `main` 16 Oct | `docs/planning/PHASE3_PLAN.md` |
+| 3.1 Silver+ | `silver_affected_product`: parse CPE 2.3 criteria to vendor, product, part, version bounds, `vulnerable`; quality rules; MERGE on (`cve_id`, `criteria`) | Zahra | none | Table populated from all Bronze, audit row, tests | `src/vulnpulse/silver/products.py`, `tests/test_silver_products.py`, `03_silver.py` (new cell) |
+| 3.1 Silver+ | `silver_cwe`: one row per CVE × CWE id from `weaknesses`; MERGE on (`cve_id`, `cwe_id`) | Zahra | none | Table populated, audit row, tests | `src/vulnpulse/silver/cwe.py`, `tests/test_silver_cwe.py` |
+| 3.2 Gold core | `gold` package skeleton, DDL for all Gold tables with `CLUSTER BY`, `dim_date` generator, `dim_severity` | Kashish | none | Empty Gold tables created idempotently; two static dims filled | `src/vulnpulse/gold/ddl.py`, `dims_static.py` |
+| 3.2 Gold core | `dim_cve` (SCD1 MERGE) and `fact_cve` (days to KEV, exploited and ransomware flags, counts) | Kashish | `silver_cve`, `silver_kev` (exist) | Both tables filled; re-run inserts 0 / updates 0 | `src/vulnpulse/gold/cve.py`, `tests/test_gold_cve.py` |
+| 3.2 Gold core | Gold watermark on Silver `load_timestamp`; `mode = incremental / full`; Silver-to-Gold audit rows per table | Kashish | above | `04_gold` runs end to end; log rows with rows read / inserted / updated | `src/vulnpulse/gold/run.py`, `notebooks/04_gold.py` |
+| 3.3 Gold arms | `dim_vendor_product`, `fact_cve_product` | Zahra | 3.1, `fact_cve` keys from Kashish | Tables filled, idempotent, tests | `src/vulnpulse/gold/products.py` |
+| 3.3 Gold arms | `dim_cwe`, `fact_cve_cwe` | Zahra | 3.1 | Tables filled, idempotent, tests | `src/vulnpulse/gold/cwe.py` |
+| 3.3 Gold arms | `gold_watchlist_v` view | Kashish | `fact_cve`, `dim_cve` | View returns rows; criteria documented | `src/vulnpulse/gold/ddl.py` |
+| 3.4 Automation | Databricks Job `vulnpulse_pipeline`: 01 and 02 parallel → 03 → 04, job parameters, one green run | Kashish | 3.2, 3.3 | Run page screenshot, job JSON exported to `docs/evidence/` | Databricks Jobs UI |
+| 3.4 Automation | `OPTIMIZE` + clustering evidence (`DESCRIBE DETAIL` before/after) | Kashish | full Gold build | Numbers in EVIDENCE.md | `04_gold.py` final cell |
+| 3.5 Model doc | `docs/GOLD_MODEL.md`: Mermaid ER diagram, every Gold table's columns, types, PK/FK | Zahra | 3.2, 3.3 DDL | Reviewed by Kashish | `docs/GOLD_MODEL.md` |
+| 3.6 BI | Power BI connection to the SQL warehouse, Import of Gold + log tables, relationships in Model view, `dim_date` marked as date table | Zahra | Gold filled | Model view screenshot | `bi/VulnPulse.pbix` |
+| 3.6 BI | Page 1 Vulnerability Intelligence: 4 KPI cards, Q1 line, Q2 bar, Q3 bar, Q4 histogram, Q5 table, slicers | Zahra | above | Page screenshot | `bi/VulnPulse.pbix` |
+| 3.6 BI | Page 2 Pipeline Health: runs by status over time, rows per run per layer, quarantine reasons, 4 KPI cards | Zahra | above | Page screenshot, PDF export of both pages | `bi/VulnPulse.pbix`, `docs/evidence/bi_*.png` |
+| 3.7 Report | Sections 1 (summary, architecture diagram), 4 (query profile DAG analysis), 5 (FinOps) | Kashish | Job run, query profile capture | Draft in repo by 21 Oct | `docs/report/VulnPulse_Phase3_Report.md` |
+| 3.7 Report | Section 2 (data models, ER), BI section, decision log outcomes for Silver and BI decisions | Zahra | GOLD_MODEL.md, dashboard | Draft in repo by 22 Oct | same file, own sections |
+| 3.7 Report | Assembly, consistency pass, PDF export | Both | all sections | `docs/report/VulnPulse_Phase3_Report.pdf` | `docs/report/` |
+| 3.8 Docs | README Phase 3 section: Gold dictionary link, job run guide, BI connection guide, proof links; EVIDENCE.md Gold and BI milestones | Kashish, Zahra adds BI parts | everything | Merged | `README.md`, `docs/EVIDENCE.md` |
+| 3.9 Freeze | Final job run, final `.pbix`, final PDF, both PRs merged, CI green | Both | all | Submission 24 Oct | n/a |
+
+## File ownership for Phase 3
+
+| Path | Owner |
+|---|---|
+| `src/vulnpulse/gold/ddl.py`, `dims_static.py`, `cve.py`, `run.py`, `notebooks/04_gold.py` | Kashish |
+| `src/vulnpulse/gold/products.py`, `cwe.py` | Zahra |
+| `src/vulnpulse/silver/products.py`, `cwe.py`, new cells in `03_silver.py` | Zahra |
+| `tests/test_gold_cve.py`, `tests/test_gold_run.py` | Kashish |
+| `tests/test_silver_products.py`, `test_silver_cwe.py`, `test_gold_products.py`, `test_gold_cwe.py` | Zahra |
+| `docs/GOLD_MODEL.md`, `bi/` | Zahra |
+| `docs/report/` sections 1, 4, 5 | Kashish |
+| `docs/report/` sections 2, 3 (BI decisions), BI section | Zahra |
+| `README.md`, `docs/EVIDENCE.md` | Shared, own sections only, never the same day |
+
+Interface contract between the two halves: Kashish publishes `src/vulnpulse/gold/ddl.py` (all Gold
+schemas, including the ones Zahra fills) on 16 Oct so both can code against fixed column names and keys.
+Zahra does not wait for `fact_cve` to build `fact_cve_product`; both read Silver, not each other.
+
+## Branches
+
+```text
+main
+├── planning-phase3        this plan (merged first)
+├── phase3-kashish         Gold core, automation, report engineering sections
+└── phase3-zahra           Silver extensions, Gold arms, BI, report model sections
+```

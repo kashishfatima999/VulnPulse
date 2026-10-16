@@ -24,7 +24,10 @@ is spent waiting on the NVD public API, which pauses ~7 s between pages without 
    - Transformations (flattening, deduplication, joins) must be executed in distributed Spark SQL/DataFrame operations.
    - Only Gold-level summary tables or filtered watchlist subsets may be exported for visualization.
 3. **Partitioning and File Sizing:**
-   - Bronze and Silver tables use partition pruning on date fields (`year(published_at)`).
+   - Phase 1 planned partition pruning on `year(published_at)`. Revised in Phase 3 (decision D6 in
+     `docs/planning/PHASE3_PLAN.md`): with every table under a million rows, Hive-style partitions
+     would create many tiny files and slow reads, so tables are not partitioned; facts use Delta
+     liquid clustering (`CLUSTER BY`) plus `OPTIMIZE` for data skipping instead.
    - Write operations utilize standard Delta compaction to avoid creating hundreds of small files (<1 MB) that exhaust file metadata limits.
 
 ### 1.2 Storage Guardrails
