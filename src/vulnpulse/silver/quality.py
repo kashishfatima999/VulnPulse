@@ -17,6 +17,10 @@ REASON_BAD_ID = "invalid_cve_id_format"
 REASON_BAD_PUBLISHED = "unparseable_published"
 REASON_BAD_LAST_MODIFIED = "unparseable_last_modified"
 REASON_BAD_DATE_ADDED = "unparseable_date_added"
+REASON_BAD_CPE = "invalid_cpe_criteria"
+REASON_BAD_CWE = "invalid_cwe_id"
+
+CWE_ID_PATTERN = r"^(CWE-\d+|NVD-CWE-noinfo|NVD-CWE-Other)$"
 
 QUARANTINE_COLUMNS = [
     "source_table",
@@ -46,6 +50,22 @@ def nvd_rules() -> list[tuple[Column, str]]:
 
 def kev_rules() -> list[tuple[Column, str]]:
     return _id_rules() + [(F.col("date_added").isNull(), REASON_BAD_DATE_ADDED)]
+
+
+def product_rules() -> list[tuple[Column, str]]:
+    """A CPE criterion must be ``cpe:2.3:`` with 13 fields, part a/o/h, and a real vendor/product."""
+    concrete = ~F.col("vendor").isin("", "*", "-") & ~F.col("product").isin("", "*", "-")
+    ok = (
+        F.col("criteria").startswith("cpe:2.3:")
+        & (F.col("_cpe_fields") == 13)
+        & F.col("part").isin("a", "o", "h")
+        & concrete
+    )
+    return [(~F.coalesce(ok, F.lit(False)), REASON_BAD_CPE)]
+
+
+def cwe_rules() -> list[tuple[Column, str]]:
+    return [(~F.coalesce(F.col("cwe_id").rlike(CWE_ID_PATTERN), F.lit(False)), REASON_BAD_CWE)]
 
 
 def split_valid_invalid(

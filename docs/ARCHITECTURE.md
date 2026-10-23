@@ -127,7 +127,7 @@ historical FULL load are uploaded the same way.
 The Silver layer unpacks nested JSON structures, standardizes data types, sanitizes identifying attributes, and deduplicates records.
 
 **Phase 2 scope:** `silver_cve` and `silver_kev`, plus a `silver_quarantine` table for records that
-cannot be conformed. `silver_affected_product`, `silver_cwe` and `silver_reference` follow in Phase 3.
+cannot be conformed. Phase 3 adds `silver_affected_product` and `silver_cwe` (2.2, 2.3); `silver_reference` is not needed by any Gold table and was dropped.
 Every Silver row additionally carries `load_timestamp` (UTC, when the row was merged) and
 `batch_id` (the Bronze batch it came from), as required by the Phase 2 rubric. Silver is written
 with `MERGE INTO` keyed on `cve_id`, after deduplicating on the latest `last_modified_at`, and is
@@ -154,20 +154,20 @@ parsed from `raw_json` with the typed `NVD_CVE_SCHEMA` / `KEV_RECORD_SCHEMA`.
 | `batch_id` | STRING, not null | Bronze batch the winning record came from |
 | `load_timestamp` | TIMESTAMP, not null | UTC start time of the Silver run that last wrote the row |
 
-### 2.2 `silver_affected_product`
-- **Grain:** One row per CVE to Product configuration.
-- **Schema:**
-  - `cve_id` (StringType, FK): References `silver_cve.cve_id`.
-  - `vendor` (StringType): Parsed from CPE URI (part 3).
-  - `product` (StringType): Parsed from CPE URI (part 4).
-  - `version_criteria` (StringType): CPE string or version constraint.
-  - `is_vulnerable` (BooleanType): Flag from configuration node.
+### 2.2 `silver_affected_product` (Phase 3)
+- **Grain:** One row per CVE × CPE match criterion. **Primary key:** (`cve_id`, `criteria`).
+- **Source:** `configurations[].nodes[].cpeMatch[]` of the **latest** Bronze version of each CVE (same dedup rule as `silver_cve`).
+- **Parsing:** `criteria` is CPE 2.3 (`cpe:2.3:part:vendor:product:version:...`, 13 fields), split on unescaped colons (`\:` is a literal colon), then unescaped.
+- **Quality:** a criterion that is not `cpe:2.3:` with 13 fields, part `a`/`o`/`h` and a concrete vendor and product goes to `silver_quarantine` as `invalid_cpe_criteria` (one row per criterion).
+- **Dedup and MERGE:** one row per key (the `vulnerable = true` entry wins when a criterion appears twice); `MERGE` on (`cve_id`, `criteria`), update only when the CVE's `last_modified_at` is newer.
+- **Columns:** `cve_id`, `criteria`, `part`, `vendor`, `product`, `version`, `vulnerable`, `version_start_including`, `version_start_excluding`, `version_end_including`, `version_end_excluding`, `last_modified_at`, `payload_sha256`, `batch_id`, `load_timestamp`.
 
-### 2.3 `silver_cwe`
-- **Grain:** One row per CVE to Weakness mapping.
-- **Schema:**
-  - `cve_id` (StringType, FK): References `silver_cve.cve_id`.
-  - `cwe_id` (StringType): Identifier (e.g., `CWE-79`, `CWE-89`).
+### 2.3 `silver_cwe` (Phase 3)
+- **Grain:** One row per CVE × weakness id. **Primary key:** (`cve_id`, `cwe_id`).
+- **Source:** `weaknesses[].description[].value` where `lang = 'en'`, latest Bronze version per CVE. The same CWE listed by NVD and a CNA collapses to one row.
+- **Quality:** ids other than `CWE-<n>`, `NVD-CWE-noinfo`, `NVD-CWE-Other` go to quarantine as `invalid_cwe_id`. The weakness `source` is not stored: it can be a CNA e-mail address (PII rule).
+- **Columns:** `cve_id`, `cwe_id`, `last_modified_at`, `payload_sha256`, `batch_id`, `load_timestamp`.
+- **Known limitation (both child tables):** the MERGE inserts and updates but does not delete; a CPE or CWE that NVD later removes from a CVE stays until a rebuild (empty the table, re-run from Bronze).
 
 ### 2.4 `silver_kev`
 - **Grain:** One row per known exploited CVE. **Primary key:** `cve_id`.

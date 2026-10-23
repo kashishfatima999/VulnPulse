@@ -20,13 +20,14 @@ KEV_UPDATE_CONDITION = (
 )
 
 
-def dedup_latest(df: DataFrame, key: str, order_by: list[str]) -> DataFrame:
+def dedup_latest(df: DataFrame, key: str | list[str], order_by: list[str]) -> DataFrame:
     """One row per ``key``: the first row when sorted by ``order_by`` descending.
 
     Callers pass enough tie-breakers (batch_id, payload_sha256) that the pick is deterministic,
     so the same input always yields the same winner.
     """
-    window = Window.partitionBy(key).orderBy(*[F.col(c).desc_nulls_last() for c in order_by])
+    keys = [key] if isinstance(key, str) else list(key)
+    window = Window.partitionBy(*keys).orderBy(*[F.col(c).desc_nulls_last() for c in order_by])
     return df.withColumn("_rn", F.row_number().over(window)).where("_rn = 1").drop("_rn")
 
 
@@ -35,17 +36,22 @@ def merge_upsert(
     source: DataFrame,
     target_fqn: str,
     *,
-    key: str,
+    key: str | list[str],
     update_condition: str,
     view_name: str = "_silver_merge_source",
 ) -> dict[str, int]:
-    """``MERGE INTO`` target on ``key``. Returns ``{"inserted": n, "updated": n}``."""
+    """``MERGE INTO`` target on ``key`` (one column or a composite key).
+
+    Returns ``{"inserted": n, "updated": n}``.
+    """
+    keys = [key] if isinstance(key, str) else list(key)
+    on = " AND ".join(f"t.{k} = s.{k}" for k in keys)
     source.createOrReplaceTempView(view_name)
     result = spark.sql(
         f"""
         MERGE INTO {target_fqn} AS t
         USING {view_name} AS s
-        ON t.{key} = s.{key}
+        ON {on}
         WHEN MATCHED AND {update_condition} THEN UPDATE SET *
         WHEN NOT MATCHED THEN INSERT *
         """

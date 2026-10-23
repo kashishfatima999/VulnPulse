@@ -16,7 +16,7 @@
 # MAGIC | `run_id` | blank = auto. Shared `batch_id` for every Gold row written by this run |
 # MAGIC | `catalog` | Unity Catalog catalog, default `workspace` |
 # MAGIC
-# MAGIC Session 1 scope: DDL, constraints, view, `dim_date`, `dim_severity`. Later cells add the rest.
+# MAGIC Sections: 1 schema, 2 static dimensions, 3 CVE core, 3b product and CWE arms, 3c watermark, 4 optimise.
 
 # COMMAND ----------
 
@@ -161,16 +161,30 @@ else:
 silver_cve = gold_run.scope_to(silver_cve_all, changed)
 
 
-def optional_counts(table: str):
+def optional_counts(table: str, to_bridge_rows):
+    """Per-CVE count of the rows the matching bridge fact will hold, so product_count and
+    cwe_count always equal the number of fact_cve_product / fact_cve_cwe rows of that CVE."""
     if table in silver_frames:
         print(f"child counts from {SILVER}.{table}")
-        return gold_cve.count_per_cve(gold_run.scope_to(silver_frames[table], changed))
+        rows = to_bridge_rows(gold_run.scope_to(silver_frames[table], changed))
+        return gold_cve.count_per_cve(rows)
     print(f"{SILVER}.{table} not present yet; count column will be NULL")
     return None
 
 
-product_counts = optional_counts("silver_affected_product")
-cwe_counts = optional_counts("silver_cwe")
+from vulnpulse.gold import cwe as gold_cwe  # noqa: E402
+from vulnpulse.gold import products as gold_products  # noqa: E402
+
+product_counts = optional_counts(
+    "silver_affected_product",
+    lambda df: gold_products.vulnerable_products(df)
+    .select(*gold_products.FACT_CVE_PRODUCT_KEYS)
+    .distinct(),
+)
+cwe_counts = optional_counts(
+    "silver_cwe",
+    lambda df: gold_cwe.keyed_cwes(df).select(*gold_cwe.FACT_CVE_CWE_KEYS).distinct(),
+)
 
 rows_in = silver_cve.count()
 print(f"silver_cve rows in scope: {rows_in}; silver_kev rows: {silver_kev.count()}")
@@ -203,6 +217,81 @@ for name, build in (
     finally:
         log_gold_write(tables[name], started, rows_in, counts, error)
 
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3b. Product and CWE arms: `dim_vendor_product`, `fact_cve_product`, `dim_cwe`, `fact_cve_cwe`
+# MAGIC
+# MAGIC Reads `silver_affected_product` and `silver_cwe`, scoped to the same changed-CVE set as section 3
+# MAGIC (`gold_run.scope_to`), so `incremental` and `full` behave identically for all eight tables. Bridge
+# MAGIC facts take `published_date_key`, `severity_key`, `cvss_v3_score` and `is_exploited` from
+# MAGIC `silver_cve` / `silver_kev` through the shared key expressions, so they always agree with `fact_cve`.
+# MAGIC Dimensions before facts. One `Silver-to-Gold` audit row per table.
+
+# COMMAND ----------
+
+if "silver_affected_product" in silver_frames and "silver_cwe" in silver_frames:
+    sap = gold_run.scope_to(silver_frames["silver_affected_product"], changed)
+    scw = gold_run.scope_to(silver_frames["silver_cwe"], changed)
+    arms = (
+        # target, MERGE keys, Silver rows read, builder
+        (
+            "dim_vendor_product",
+            gold_products.DIM_VENDOR_PRODUCT_KEYS,
+            sap,
+            lambda ts: gold_products.build_dim_vendor_product(sap, batch_id=RUN_ID, load_timestamp=ts),
+        ),
+        (
+            "fact_cve_product",
+            gold_products.FACT_CVE_PRODUCT_KEYS,
+            sap,
+            lambda ts: gold_products.build_fact_cve_product(
+                sap, silver_cve, silver_kev, batch_id=RUN_ID, load_timestamp=ts
+            ),
+        ),
+        (
+            "dim_cwe",
+            gold_cwe.DIM_CWE_KEYS,
+            scw,
+            lambda ts: gold_cwe.build_dim_cwe(scw, batch_id=RUN_ID, load_timestamp=ts),
+        ),
+        (
+            "fact_cve_cwe",
+            gold_cwe.FACT_CVE_CWE_KEYS,
+            scw,
+            lambda ts: gold_cwe.build_fact_cve_cwe(
+                scw, silver_cve, silver_kev, batch_id=RUN_ID, load_timestamp=ts
+            ),
+        ),
+    )
+    for name, keys, source_rows, build in arms:
+        started = utc_now()
+        error = None
+        counts = {}
+        rows_read = 0
+        try:
+            rows_read = source_rows.count()
+            counts = gold_merge.merge_gold(spark, build(started), tables[name], keys=keys)
+            print(
+                f"{name}: read {rows_read}, inserted {counts['inserted']}, updated {counts['updated']}"
+            )
+        except Exception as exc:  # noqa: BLE001 - logged then re-raised
+            error = f"{type(exc).__name__}: {exc}"[:2000]
+            raise
+        finally:
+            log_gold_write(tables[name], started, rows_read, counts, error)
+else:
+    print("silver_affected_product / silver_cwe not present yet: run 03_silver first; arms skipped")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3c. Advance the Gold watermark
+# MAGIC
+# MAGIC Only after every MERGE in sections 3 and 3b succeeded (contract rule 24). A failure above stops the
+# MAGIC notebook before this cell, so the next run retries the same changed set.
+
+# COMMAND ----------
 # Advance the Gold watermark only now, after every MERGE above succeeded (contract rule 24).
 new_wm = gold_run.max_load_timestamp(list(silver_frames.values()))
 if new_wm is not None and (gold_wm is None or new_wm > gold_wm):
@@ -246,6 +335,35 @@ display(
     )
 )
 display(spark.sql(f"SELECT count(*) AS watchlist_rows FROM {GOLD}.{ddl.WATCHLIST_VIEW}"))
+display(
+    spark.sql(
+        f"""
+        SELECT 'dim_vendor_product' AS table_name, count(*) AS rows FROM {GOLD}.dim_vendor_product
+        UNION ALL SELECT 'fact_cve_product', count(*) FROM {GOLD}.fact_cve_product
+        UNION ALL SELECT 'dim_cwe', count(*) FROM {GOLD}.dim_cwe
+        UNION ALL SELECT 'fact_cve_cwe', count(*) FROM {GOLD}.fact_cve_cwe
+        """
+    )
+)
+display(
+    spark.sql(
+        f"""
+        SELECT v.vendor, count(DISTINCT f.cve_id) AS cves, sum(f.is_exploited) AS exploited
+        FROM {GOLD}.fact_cve_product f
+        JOIN {GOLD}.dim_vendor_product v ON v.vendor_product_key = f.vendor_product_key
+        GROUP BY v.vendor ORDER BY exploited DESC, cves DESC LIMIT 10
+        """
+    )
+)
+display(
+    spark.sql(
+        f"""
+        SELECT c.cwe_id, count(*) AS cves, sum(f.is_exploited) AS exploited
+        FROM {GOLD}.fact_cve_cwe f JOIN {GOLD}.dim_cwe c ON c.cwe_key = f.cwe_key
+        GROUP BY c.cwe_id ORDER BY exploited DESC, cves DESC LIMIT 10
+        """
+    )
+)
 
 # COMMAND ----------
 
