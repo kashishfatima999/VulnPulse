@@ -1,6 +1,7 @@
 """Silver table definitions and idempotent DDL.
 
-Phase 2 scope: ``silver_cve``, ``silver_kev`` and ``silver_quarantine``. Every row carries
+Phase 2: ``silver_cve``, ``silver_kev``, ``silver_quarantine``. Phase 3 adds the child tables
+``silver_affected_product`` and ``silver_cwe``. Every row carries
 ``batch_id`` (the Bronze batch it came from) and ``load_timestamp`` (UTC, when Silver wrote it).
 Running ``ensure_tables`` any number of times is safe: everything is ``IF NOT EXISTS``.
 """
@@ -21,6 +22,8 @@ from pyspark.sql.types import (
 SILVER_CVE_TABLE = "silver_cve"
 SILVER_KEV_TABLE = "silver_kev"
 SILVER_QUARANTINE_TABLE = "silver_quarantine"
+SILVER_AFFECTED_PRODUCT_TABLE = "silver_affected_product"
+SILVER_CWE_TABLE = "silver_cwe"
 
 # Primary key: cve_id.
 SILVER_CVE_SCHEMA = StructType(
@@ -72,6 +75,41 @@ SILVER_QUARANTINE_SCHEMA = StructType(
     ]
 )
 
+# Primary key: (cve_id, criteria). One row per CVE x CPE match criterion (Phase 3).
+SILVER_AFFECTED_PRODUCT_SCHEMA = StructType(
+    [
+        StructField("cve_id", StringType(), nullable=False),
+        StructField("criteria", StringType(), nullable=False),  # full cpe:2.3:... string
+        StructField("part", StringType()),  # a = application, o = OS, h = hardware
+        StructField("vendor", StringType()),
+        StructField("product", StringType()),
+        StructField("version", StringType()),  # CPE version field; '*' = any
+        StructField("vulnerable", BooleanType()),
+        StructField("version_start_including", StringType()),
+        StructField("version_start_excluding", StringType()),
+        StructField("version_end_including", StringType()),
+        StructField("version_end_excluding", StringType()),
+        StructField("last_modified_at", TimestampType()),  # of the parent CVE; drives MERGE updates
+        StructField("payload_sha256", StringType()),
+        StructField("batch_id", StringType(), nullable=False),
+        StructField("load_timestamp", TimestampType(), nullable=False),
+    ]
+)
+
+# Primary key: (cve_id, cwe_id). One row per CVE x weakness id (Phase 3).
+SILVER_CWE_SCHEMA = StructType(
+    [
+        StructField("cve_id", StringType(), nullable=False),
+        StructField(
+            "cwe_id", StringType(), nullable=False
+        ),  # CWE-79 | NVD-CWE-noinfo | NVD-CWE-Other
+        StructField("last_modified_at", TimestampType()),
+        StructField("payload_sha256", StringType()),
+        StructField("batch_id", StringType(), nullable=False),
+        StructField("load_timestamp", TimestampType(), nullable=False),
+    ]
+)
+
 _TABLES = {
     SILVER_CVE_TABLE: (SILVER_CVE_SCHEMA, "One row per CVE: typed, deduplicated, PII-sanitised"),
     SILVER_KEV_TABLE: (SILVER_KEV_SCHEMA, "One row per CISA known exploited CVE"),
@@ -79,6 +117,11 @@ _TABLES = {
         SILVER_QUARANTINE_SCHEMA,
         "Bronze records that could not be conformed to Silver, with the reason",
     ),
+    SILVER_AFFECTED_PRODUCT_TABLE: (
+        SILVER_AFFECTED_PRODUCT_SCHEMA,
+        "One row per CVE x CPE match criterion, vendor and product parsed from CPE 2.3",
+    ),
+    SILVER_CWE_TABLE: (SILVER_CWE_SCHEMA, "One row per CVE x CWE weakness id"),
 }
 
 

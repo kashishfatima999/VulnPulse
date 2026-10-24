@@ -148,8 +148,8 @@ VulnPulse/
 │   ├── 00_setup_catalog.py           # Once: creates vulnpulse_bronze/silver/gold schemas + landing volume
 │   ├── 01_bronze_nvd.py              # Raw-to-Bronze NVD: FULL / INCREMENTAL / BACKFILL from a landing folder
 │   ├── 02_bronze_kev.py              # Raw-to-Bronze CISA KEV: full snapshot from a landing folder
-│   ├── 03_silver.py                  # Bronze-to-Silver NVD + KEV: transform, quarantine, dedup, MERGE, audit
-│   ├── 04_gold.py                    # Silver-to-Gold: star schema DDL, static dims, dim_cve/fact_cve MERGE, watermark, OPTIMIZE
+│   ├── 03_silver.py                  # Bronze-to-Silver NVD + KEV + affected products + CWEs: transform, quarantine, dedup, MERGE, audit
+│   ├── 04_gold.py                    # Silver-to-Gold: star schema DDL, static dims, CVE core + product/CWE arms MERGE, watermark, OPTIMIZE
 │   └── 99_failure_drills.py          # Demo only: Silver failure drills D1-D4 on scratch copies of the tables
 ├── src/vulnpulse/                    # Production code, imported by notebooks and tests. Never run directly.
 │   ├── schemas/
@@ -162,9 +162,11 @@ VulnPulse/
 │   │   ├── nvd.py                    # Read NVD files, one row per CVE, attach metadata, append to Delta
 │   │   └── kev.py                    # Download KEV catalog, one row per entry, append to Delta
 │   ├── silver/
-│   │   ├── ddl.py                    # Silver StructTypes + idempotent CREATE TABLE (silver_cve, silver_kev, quarantine)
+│   │   ├── ddl.py                    # Silver StructTypes + idempotent CREATE TABLE (cve, kev, affected_product, cwe, quarantine)
 │   │   ├── transform.py              # NVD raw_json -> typed silver_cve rows: UTC timestamps, CVSS v3.1/v3.0, PII rule
 │   │   ├── kev.py                    # KEV raw_json -> typed silver_kev rows: DATE casts
+│   │   ├── products.py               # CPE 2.3 criteria -> silver_affected_product (part, vendor, product, version bounds)
+│   │   ├── cwe.py                    # weaknesses (lang en) -> silver_cwe, one row per CVE x CWE id
 │   │   ├── quality.py                # Quarantine rules and the valid / quarantine split, with reasons
 │   │   ├── merge.py                  # Dedup on the key (latest wins), MERGE INTO, insert-only quarantine MERGE
 │   │   └── params.py                 # Silver run parameters: catalog, batch_id / date-window backfill filters
@@ -175,6 +177,8 @@ VulnPulse/
 │   │   ├── keys.py                   # Shared key expressions: date_key, severity_key, vendor_product_key, cwe_key
 │   │   ├── dims_static.py            # dim_date (1988-2030) and dim_severity generators
 │   │   ├── cve.py                    # dim_cve and fact_cve builders (days to KEV, exploitation flags)
+│   │   ├── products.py               # dim_vendor_product and fact_cve_product builders (vulnerable CPEs only)
+│   │   ├── cwe.py                    # dim_cwe and fact_cve_cwe builders
 │   │   ├── merge.py                  # Change-aware Gold MERGE: update only when business columns differ
 │   │   └── run.py                    # Gold watermark on Silver load_timestamp, changed-CVE scope
 │   └── utils/
@@ -195,21 +199,28 @@ VulnPulse/
 │   ├── test_gold_ddl.py              # Star schema contract: PKs not null, FKs reference PKs, clustering on facts
 │   ├── test_gold_keys_and_static_dims.py # Key expressions, dim_date calendar logic, dim_severity bands
 │   ├── test_gold_cve.py              # dim_cve / fact_cve builders, change-aware MERGE predicate
-│   └── test_gold_run.py              # Changed-CVE scope across Silver tables, next Gold watermark
+│   ├── test_gold_run.py              # Changed-CVE scope across Silver tables, next Gold watermark
+│   ├── test_silver_products_cwe.py   # CPE parsing (escaped colons), quarantine, dedup, latest version; CWE ids, PII
+│   └── test_gold_products_cwe.py     # Product and CWE dims and bridge facts; keys agree with fact_cve
 ├── scripts/                          # Laptop-side tooling (Free Edition serverless has no internet)
 │   ├── fetch_nvd.py                  # Fetch an NVD window (incremental or backfill) into landing/
 │   ├── fetch_kev.py                  # Download the KEV catalog into landing/
 │   ├── collect_phase1_samples.py     # Phase 1: re-fetches the ten-record samples
-│   └── validate_samples.py           # Phase 1: verifies samples against source_manifest.json (CI)
+│   ├── validate_samples.py           # Phase 1: verifies samples against source_manifest.json (CI)
+│   └── gen_gold_model.py             # Regenerates docs/GOLD_MODEL.md (ER diagram + dictionary) from gold/ddl.py
 ├── data/                             # Ten-record real samples (<100 KB). No full datasets, ever.
 │   ├── nvd_full_load_sample.json
 │   ├── nvd_incremental_load_sample.json
 │   ├── cisa_kev_sample.json
 │   ├── source_manifest.json          # Capture URLs, timestamps, record counts, SHA-256 digests
 │   └── README.md
+├── bi/
+│   ├── VulnPulse.pbix                # Power BI report: star model + Vulnerability Intelligence and Pipeline Health pages
+│   └── VulnPulse.pdf                 # PDF export of the report pages
 ├── docs/
 │   ├── 24L-2605&24L-2512-VulnPulse_Phase1_Proposal.pdf   # Approved Phase 1 proposal
 │   ├── ARCHITECTURE.md               # Lakehouse design and table specifications
+│   ├── GOLD_MODEL.md                 # Gold star schema: Mermaid ER diagram, relationships, data dictionary (generated)
 │   ├── FINOPS.md                     # Free Edition quota, storage and testing guardrails
 │   ├── EVIDENCE.md                   # Run evidence: audit rows, screenshots, failure drills, Gold milestones
 │   ├── evidence/                     # Screenshots, CSV log exports, notebook HTML exports, job definition JSON
@@ -403,21 +414,21 @@ SELECT batch_id, load_type, count(*) FROM workspace.vulnpulse_bronze.bronze_nvd_
 
 Requirements: [`docs/requirements/phase3.txt`](docs/requirements/phase3.txt). Plan, decision log and
 schedule: [`docs/planning/PHASE3_PLAN.md`](docs/planning/PHASE3_PLAN.md). Milestone evidence G1 to G5:
-[`docs/EVIDENCE.md`](docs/EVIDENCE.md). Status on 17 Oct 2026: Gold core, incremental refresh, Job and
-optimisation are implemented and proven; the product and CWE arms of the star, the ER document and the
-Power BI dashboard are in progress.
+[`docs/EVIDENCE.md`](docs/EVIDENCE.md). Status on 24 Oct 2026: the full star (5 dimensions, 3 facts, watchlist
+view), incremental refresh, the Job, optimisation, the ER document and the Power BI dashboard are implemented
+and proven (G1 to G7).
 
 ### Phase 3 Rubric Compliance Matrix
 
 | Requirement | How VulnPulse meets it | Evidence |
 |---|---|---|
 | Star schema with facts and dimensions, not Silver copies | 5 dimensions (`dim_date`, `dim_severity`, `dim_cve`, `dim_vendor_product`, `dim_cwe`), 3 facts (`fact_cve` at CVE grain, `fact_cve_product` and `fact_cve_cwe` as bridge facts), 1 view. Every fact row carries integer date and severity keys; descriptive text lives only in dimensions | `src/vulnpulse/gold/ddl.py`, G1 |
-| Gold data dictionary with PK/FK relationships | Keys declared once in `ddl.py` and also as Unity Catalog informational constraints: 8 primary keys and 14 foreign keys, all accepted. ER document `docs/GOLD_MODEL.md` (in progress) | G1, Catalog Explorer |
+| Gold data dictionary with PK/FK relationships | Keys declared once in `ddl.py` and also as Unity Catalog informational constraints: 8 primary keys and 14 foreign keys, all accepted. ER document [`docs/GOLD_MODEL.md`](docs/GOLD_MODEL.md), generated from `ddl.py` by `scripts/gen_gold_model.py` | G1, Catalog Explorer |
 | Performance optimisation (recommended) | Facts created with liquid clustering (`CLUSTER BY`); `OPTIMIZE` as an explicit maintenance step with before/after `DESCRIBE DETAIL`. Measured: `fact_cve` was already one 0.27 MB file, so `OPTIMIZE` was a no-op at this scale | `04_gold.py` section 4, G5 |
 | Gold linked to the pipeline, refreshes after Silver | Databricks Job `vulnpulse_pipeline`: `bronze_nvd` and `bronze_kev` in parallel → `silver` → `gold`. Gold scopes work by a watermark on Silver `load_timestamp`: a run after 793 new NVD records rebuilt 785 CVEs, not 43,198 | `docs/evidence/vulnpulse_pipeline_job.json`, G3, G4 |
 | Logging continuation with rows aggregated and execution time | Every Gold table write appends a `Silver-to-Gold` row to `pipeline_execution_logs` with the table as `source`, `rows_read` = Silver rows aggregated, inserted and updated counts, start and end time | `docs/evidence/silver_to_gold_logs_*.csv` |
-| Idempotent Gold | Change-aware MERGE: a matched row is rewritten only when a business column differs, so a re-run on unchanged Silver writes 0 rows and reads 0 rows | G2b, G3b |
-| BI connected to Databricks, star relationships in the model, ≥3 visuals including audit | Power BI Desktop, Import mode over the SQL warehouse, Gold tables only. In progress | `bi/VulnPulse.pbix` (pending) |
+| Idempotent Gold | Change-aware MERGE: a matched row is rewritten only when a business column differs, so a re-run on unchanged Silver writes 0 rows and reads 0 rows | G2b, G3b, G6c |
+| BI connected to Databricks, star relationships in the model, ≥3 visuals including audit | Power BI Desktop with the Databricks connector over the Serverless Starter Warehouse, Import mode. Model view mirrors `FOREIGN_KEYS` (14 one-to-many relationships). Two pages: Vulnerability Intelligence (4 KPIs, Q1 to Q5 visuals, slicers) and Pipeline Health (run KPIs, runs by status, rows per layer, run log) | `bi/VulnPulse.pbix`, `bi/VulnPulse.pdf`, `docs/evidence/bi_*.png`, G7 |
 | Final PDF report with diagram, decision log, Spark DAG analysis, FinOps | `docs/report/` (after 22 Oct) | pending |
 
 ### Gold Data Dictionary (summary)
@@ -458,6 +469,48 @@ Silver → Gold with one click; a green run takes about five minutes on serverle
 after a successful Bronze task, so a second run against the same folders fails cleanly at Bronze and skips the
 rest, which is the intended behaviour. The job definition is in `docs/evidence/vulnpulse_pipeline_job.json`.
 
+
+### Business Intelligence: Power BI
+
+File: [`bi/VulnPulse.pbix`](bi/VulnPulse.pbix) (PDF export of the pages: [`bi/VulnPulse.pdf`](bi/VulnPulse.pdf)).
+
+**Connect.** Power BI Desktop → Get data → Databricks. Server hostname `dbc-98fdd24a-3295.cloud.databricks.com`;
+HTTP path from SQL Warehouses → Serverless Starter Warehouse → Connection details; default catalog `workspace`,
+database `vulnpulse_gold`; **Import** mode. Sign in with OAuth (or a personal access token with the *BI Tools*
+scope where the workspace allows it). Credentials stay in Power BI's credential store, never in the `.pbix` or Git.
+Import keeps the warehouse idle while people browse; **Home → Refresh** after a Gold run pulls new data.
+
+**Semantic model** ([`docs/evidence/bi_model_view.png`](docs/evidence/bi_model_view.png)). Loaded: the 5 dimensions,
+3 facts, `gold_watchlist_v`, `pipeline_execution_logs`, `pipeline_watermarks`, and `silver_quarantine` (database
+`vulnpulse_silver`) for the audit page. Relationships are exactly the 14 in [`docs/GOLD_MODEL.md`](docs/GOLD_MODEL.md):
+one-to-many from dimension to fact, single direction; `fact_cve` uses `published_date_key` as the active date and
+the other three date keys as inactive role-playing relationships. `dim_date` is marked as the date table and
+`dim_severity[severity]` sorts by `sort_order`. The watchlist and the two pipeline tables stand alone.
+
+**Measures (DAX).**
+
+| Measure | Definition | Why |
+|---|---|---|
+| Total CVEs | `SUM(fact_cve[cve_count])` | `cve_count` is always 1, so counting is additive |
+| Critical CVEs | `CALCULATE([Total CVEs], dim_severity[severity] = "CRITICAL")` | |
+| Exploited CVEs | `SUM(fact_cve[is_exploited])` | 0/1 flag |
+| Median days to KEV | `MEDIAN(fact_cve[days_to_kev])` | median, because the distribution has a long tail |
+| Exploited by vendor | `CALCULATE(DISTINCTCOUNT(fact_cve_product[cve_id]), fact_cve_product[is_exploited] = 1)` | the bridge has one row per CVE × product; distinct CVEs avoid counting a CVE once per product |
+| Exploited by CWE | `SUM(fact_cve_cwe[is_exploited])` | one row per CVE × CWE, so a sum is a distinct count |
+| Runs, Failed runs, Last run finished | `COUNTROWS`, filtered on `status = "FAILURE"`, `MAX(finished_at)` over `pipeline_execution_logs` | audit page |
+| Last Gold watermark | `MAX(pipeline_watermarks[watermark_ts])` for `source = "gold_from_silver"` | audit page |
+| Quarantined rows | `COUNTROWS(silver_quarantine)` | audit page |
+
+**Page 1, Vulnerability Intelligence** ([`docs/evidence/bi_page1.png`](docs/evidence/bi_page1.png)): KPI cards;
+Q1 CVEs per year by severity; Q2 top 10 vendors by exploited CVEs; Q3 top 10 weaknesses among exploited CVEs;
+Q4 histogram of days to KEV (30-day bins); Q5 watchlist table; year and severity slicers. The year and severity
+slicers filter all three facts because `dim_date` and `dim_severity` are shared dimensions; vendor and CWE live on
+the bridge facts, so they filter only the vendor and weakness visuals, by design.
+
+**Page 2, Pipeline Health** ([`docs/evidence/bi_page2.png`](docs/evidence/bi_page2.png)): runs, failures, last run,
+Gold watermark, quarantined rows; runs per day by status; rows inserted and updated per layer; full run log with
+read, inserted, updated and quarantined counts per table write; layer slicer.
+
 ---
 
 ## Proof
@@ -478,7 +531,7 @@ Everything in the table can also be reproduced by following the Execution Guide 
 
 - **Phase 1 (Completed):** Proposal document, domain and source identification, sample payloads, Medallion architecture model, FinOps plan, and repository initialization.
 - **Phase 2 (Done, due 10 Oct 2026):** Raw-to-Bronze for NVD (full, incremental, backfill) and CISA KEV with explicit schemas, audit logging and watermarks. Bronze-to-Silver with casting, dedup + `MERGE INTO`, quarantine, schema-drift logging and audit for both sources.
-- **Phase 3 (In progress, due 24 Oct 2026):** Gold star schema (5 dimensions, 3 facts, watchlist view) with PK/FK constraints and liquid clustering, watermark-driven incremental Gold refresh, Databricks Job linking Bronze → Silver → Gold (green run 17 Oct), OPTIMIZE measurement: done. Product and CWE arms of the star, ER document, Power BI dashboard, final architecture and FinOps report: in progress. Plan and decision log: [`docs/planning/PHASE3_PLAN.md`](docs/planning/PHASE3_PLAN.md); requirements: [`docs/requirements/phase3.txt`](docs/requirements/phase3.txt).
+- **Phase 3 (In progress, due 24 Oct 2026):** Gold star schema (5 dimensions, 3 facts, watchlist view) with PK/FK constraints and liquid clustering, watermark-driven incremental Gold refresh, Databricks Job linking Bronze → Silver → Gold (green run 17 Oct), OPTIMIZE measurement: done. Product and CWE arms of the star, ER document and Power BI dashboard: done (G6, G7). Final architecture and FinOps report: in progress. Plan and decision log: [`docs/planning/PHASE3_PLAN.md`](docs/planning/PHASE3_PLAN.md); requirements: [`docs/requirements/phase3.txt`](docs/requirements/phase3.txt).
 
 ---
 

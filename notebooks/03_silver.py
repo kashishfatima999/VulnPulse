@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 03 · Bronze-to-Silver: NVD and CISA KEV
+# MAGIC # 03 · Bronze-to-Silver: NVD, CISA KEV, affected products, CWEs
 # MAGIC
 # MAGIC Thin runner. Reads parameters, calls `vulnpulse.silver`, writes one `Bronze-to-Silver` audit row per
 # MAGIC source, shows results. Every write is a `MERGE`, so re-running on the same Bronze changes nothing.
@@ -11,7 +11,8 @@
 # MAGIC | `from_date` / `to_date` | blank | `YYYY-MM-DD`, inclusive, on Bronze `load_timestamp` (UTC) |
 # MAGIC | `catalog` | `workspace` | `workspace` |
 # MAGIC
-# MAGIC Failure drills live in `99_failure_drills`, not here.
+# MAGIC Run cells: `silver_cve`, `silver_kev`, then (Phase 3) `silver_affected_product` and `silver_cwe`,
+# MAGIC each with its own audit row. Failure drills live in `99_failure_drills`, not here.
 
 # COMMAND ----------
 
@@ -214,5 +215,97 @@ display(
     spark.sql(
         f"SELECT count(*) AS kev_rows, count(DISTINCT cve_id) AS distinct_cves, "
         f"min(date_added) AS first_added, max(date_added) AS last_added FROM {KEV_TABLE}"
+    )
+)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Phase 3: child tables `silver_affected_product` and `silver_cwe`
+# MAGIC
+# MAGIC Same pattern as `silver_cve`: latest Bronze version per CVE, typed explode, quality rules,
+# MAGIC dedup on the composite key, `MERGE` (update only when the CVE's `lastModified` is newer),
+# MAGIC quarantine with a reason, one `Bronze-to-Silver` audit row per table.
+
+# COMMAND ----------
+
+from vulnpulse.silver import cwe as cwe_tf  # noqa: E402
+from vulnpulse.silver import products as product_tf  # noqa: E402
+
+CHILD_TABLES = (
+    # target table, module, composite key, quarantine source label
+    (tables[ddl.SILVER_AFFECTED_PRODUCT_TABLE], product_tf, product_tf.PRODUCT_KEY, "cpe"),
+    (tables[ddl.SILVER_CWE_TABLE], cwe_tf, cwe_tf.CWE_KEY, "cwe"),
+)
+
+for target, module, key, label in CHILD_TABLES:
+    run_id = new_batch_id()  # unique per table per execution of this cell
+    started_at = utc_now()
+    rows_read = inserted = updated = quarantined = 0
+    error = None
+    try:
+        bronze = filter_bronze(spark.table(BRONZE_TABLE), params)
+        if module is product_tf:
+            shaped = product_tf.transform_products(bronze, load_timestamp=started_at)
+        else:
+            shaped = cwe_tf.transform_cwe(bronze, load_timestamp=started_at)
+        rows_read = shaped.count()  # exploded child rows considered
+
+        latest, bad = module.split_and_dedup(shaped, source_table=f"{BRONZE_TABLE}#{label}")
+        counts = merge.merge_upsert(
+            spark, latest, target, key=key, update_condition=merge.CVE_UPDATE_CONDITION
+        )
+        inserted, updated = counts["inserted"], counts["updated"]
+        quarantined = merge.merge_quarantine(spark, bad, QUARANTINE_TABLE)["inserted"]
+        status = log.STATUS_SUCCESS
+    except Exception as exc:  # noqa: BLE001 - logged then re-raised
+        status = log.STATUS_FAILURE
+        error = f"{type(exc).__name__}: {exc}"[:2000]
+        raise
+    finally:
+        log.append(
+            log.build_log_row(
+                spark,
+                batch_id=run_id,
+                layer=log.LAYER_BRONZE_TO_SILVER,
+                source=f"{BRONZE_TABLE} -> {target}",
+                load_type=params.load_type,
+                parameters={**params.as_dict(), "run_id": run_id},
+                started_at=started_at,
+                finished_at=utc_now(),
+                status=status,
+                rows_read=rows_read,
+                rows_inserted=inserted,
+                rows_updated=updated,
+                rows_quarantined=quarantined,
+                error_message=error,
+            ),
+            LOG_TABLE,
+        )
+    print(
+        f"{target.split('.')[-1]} {status}: read {rows_read}, inserted {inserted}, "
+        f"updated {updated}, quarantined {quarantined}"
+    )
+
+# COMMAND ----------
+
+display(
+    spark.sql(
+        f"""
+        SELECT 'silver_affected_product' AS table_name, count(*) AS rows,
+               count(DISTINCT cve_id) AS cves,
+               count(DISTINCT concat(vendor, '|', product)) AS vendor_products,
+               sum(CAST(vulnerable AS INT)) AS vulnerable_rows
+        FROM {tables[ddl.SILVER_AFFECTED_PRODUCT_TABLE]}
+        UNION ALL
+        SELECT 'silver_cwe', count(*), count(DISTINCT cve_id), count(DISTINCT cwe_id), NULL
+        FROM {tables[ddl.SILVER_CWE_TABLE]}
+        """
+    )
+)
+display(
+    spark.sql(
+        f"SELECT source_table, reason, count(*) AS n FROM {QUARANTINE_TABLE} "
+        f"GROUP BY source_table, reason ORDER BY n DESC"
     )
 )
