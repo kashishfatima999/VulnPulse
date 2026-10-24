@@ -39,6 +39,12 @@ GRANT ALL PRIVILEGES ON SCHEMA workspace.vulnpulse_gold   TO `teammate@example.c
 ```
 
 Schema privileges are inherited by every table and volume inside, including ones created later.
+Grant them in **both directions**: owning a schema does not give the owner privileges on tables a
+teammate creates inside it (observed twice: G6, Zahra blocked on Kashish's Gold objects; G8, the Job
+running as Kashish blocked on Zahra's `silver_affected_product`). Each teammate therefore runs, for
+the other, `GRANT USE SCHEMA, SELECT, MODIFY ON SCHEMA workspace.vulnpulse_silver TO \`<user>\`;` and
+the same for `vulnpulse_gold`. Overwrites and `CREATE OR REPLACE VIEW` additionally need `MANAGE` on
+the object or ownership.
 `CREATE SCHEMA` on the catalog is deliberately not granted: the schemas already exist and only the
 owner runs `00_setup_catalog`. Verify with `SHOW GRANTS \`teammate@example.com\` ON SCHEMA
 workspace.vulnpulse_bronze;`.

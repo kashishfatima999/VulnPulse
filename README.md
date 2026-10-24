@@ -223,7 +223,10 @@ VulnPulse/
 │   ├── GOLD_MODEL.md                 # Gold star schema: Mermaid ER diagram, relationships, data dictionary (generated)
 │   ├── FINOPS.md                     # Free Edition quota, storage and testing guardrails
 │   ├── EVIDENCE.md                   # Run evidence: audit rows, screenshots, failure drills, Gold milestones
-│   ├── evidence/                     # Screenshots, CSV log exports, notebook HTML exports, job definition JSON
+│   ├── evidence/                     # Screenshots, CSV log exports, notebook HTML exports, job definition JSON, DAG capture
+│   ├── report/
+│   │   ├── VulnPulse_Phase3_Report.md   # Final report source: architecture, models, decision log, DAG analysis, FinOps
+│   │   └── VulnPulse_Phase3_Report.pdf  # Submitted PDF, exported from the Markdown
 │   ├── requirements/                 # Teacher's requirement texts (phase1.txt, phase2.txt, phase3.txt)
 │   └── planning/                     # Work division, Databricks runbook, Phase 3 plan and decision log
 ├── PROJECT_CONTRACT.md               # The rubric as hard rules. Paste into every AI prompt.
@@ -413,10 +416,12 @@ SELECT batch_id, load_type, count(*) FROM workspace.vulnpulse_bronze.bronze_nvd_
 ## Phase 3: Gold Star Schema, Automation and BI
 
 Requirements: [`docs/requirements/phase3.txt`](docs/requirements/phase3.txt). Plan, decision log and
-schedule: [`docs/planning/PHASE3_PLAN.md`](docs/planning/PHASE3_PLAN.md). Milestone evidence G1 to G5:
-[`docs/EVIDENCE.md`](docs/EVIDENCE.md). Status on 24 Oct 2026: the full star (5 dimensions, 3 facts, watchlist
-view), incremental refresh, the Job, optimisation, the ER document and the Power BI dashboard are implemented
-and proven (G1 to G7).
+schedule: [`docs/planning/PHASE3_PLAN.md`](docs/planning/PHASE3_PLAN.md). Milestone evidence G1 to G8:
+[`docs/EVIDENCE.md`](docs/EVIDENCE.md). Final report:
+[`docs/report/VulnPulse_Phase3_Report.pdf`](docs/report/VulnPulse_Phase3_Report.pdf) (source
+[`docs/report/VulnPulse_Phase3_Report.md`](docs/report/VulnPulse_Phase3_Report.md)). Status on 24 Oct 2026: the
+full star (5 dimensions, 3 facts, watchlist view), incremental refresh, the Job, optimisation, the ER document,
+the Power BI dashboard and the report are complete (G1 to G8).
 
 ### Phase 3 Rubric Compliance Matrix
 
@@ -429,7 +434,8 @@ and proven (G1 to G7).
 | Logging continuation with rows aggregated and execution time | Every Gold table write appends a `Silver-to-Gold` row to `pipeline_execution_logs` with the table as `source`, `rows_read` = Silver rows aggregated, inserted and updated counts, start and end time | `docs/evidence/silver_to_gold_logs_*.csv` |
 | Idempotent Gold | Change-aware MERGE: a matched row is rewritten only when a business column differs, so a re-run on unchanged Silver writes 0 rows and reads 0 rows | G2b, G3b, G6c |
 | BI connected to Databricks, star relationships in the model, ≥3 visuals including audit | Power BI Desktop with the Databricks connector over the Serverless Starter Warehouse, Import mode. Model view mirrors `FOREIGN_KEYS` (14 one-to-many relationships). Two pages: Vulnerability Intelligence (4 KPIs, Q1 to Q5 visuals, slicers) and Pipeline Health (run KPIs, runs by status, rows per layer, run log) | `bi/VulnPulse.pbix`, `bi/VulnPulse.pdf`, `docs/evidence/bi_*.png`, G7 |
-| Final PDF report with diagram, decision log, Spark DAG analysis, FinOps | `docs/report/` (after 22 Oct) | pending |
+| Spark UI and DAG analysis of the most complex transformation | Query profile of the `fact_cve_product` build in `04_gold` (full mode): scan of `silver_affected_product` (292k rows) joined to `silver_cve` and `silver_kev`, aggregation per CVE × vendor/product, then the Delta MERGE. The report explains the scans, exchanges (shuffles), broadcast joins and the MERGE file rewrite | `docs/evidence/g8_query_profile_panel.png`, `docs/evidence/g8_query_profile_fact_cve_cwe_merge.json` (exported serverless query profile with the plan graph), report section 4, G8b |
+| Final PDF report with diagram, decision log, Spark DAG analysis, FinOps | [`docs/report/VulnPulse_Phase3_Report.pdf`](docs/report/VulnPulse_Phase3_Report.pdf): architecture diagram (source → laptop acquisition → landing volume → Bronze → Silver → Gold → Power BI), data models, decision log D1 to D14 with outcomes (clustering keys, schema drift incidents, PII rule), DAG analysis, FinOps evaluation from measured run times, evidence index, team contribution | `docs/report/` |
 
 ### Gold Data Dictionary (summary)
 
@@ -468,6 +474,11 @@ Watermarks: `SELECT * FROM workspace.vulnpulse_gold.pipeline_watermarks` shows `
 Silver → Gold with one click; a green run takes about five minutes on serverless. Landing folders are deleted
 after a successful Bronze task, so a second run against the same folders fails cleanly at Bronze and skips the
 rest, which is the intended behaviour. The job definition is in `docs/evidence/vulnpulse_pipeline_job.json`.
+
+**Capturing the Spark DAG.** Run `04_gold` with `mode = full` so the product arm processes every Silver row,
+expand **Spark Jobs** under the section 3b cell and open **View** on the longest job (or click **See performance**),
+then the **SQL / DataFrame** tab → the `MERGE INTO ... fact_cve_product` query. The graph and the physical plan under
+**Details** are the inputs to report section 4.
 
 
 ### Business Intelligence: Power BI
@@ -519,8 +530,10 @@ Grading is on what the pipeline does, so the evidence is kept in three forms:
 
 | Form | Where | What it shows |
 |---|---|---|
-| **Screen recording, about 5 minutes, no audio** (narrated live at the viva; the sequence is listed in the next column) | https://youtu.be/Q1Pq-MEYE0o (unlisted) | Explicit `StructType` schemas in `src/vulnpulse/schemas/`; a live BACKFILL run of `01_bronze_nvd` from a landing folder, watermark untouched; `03_silver` re-run on unchanged Bronze with inserted 0 / updated 0 and row count equal to distinct CVEs; schema drift (`vendorComments` detected in the 2020 feed, quarantine rows and a string CVSS score cast in `99_failure_drills`); the `pipeline_execution_logs` table with successes and failures |
-| **Notebook exports with outputs** | [`docs/evidence/01_bronze_nvd.html`](docs/evidence/01_bronze_nvd.html), [`docs/evidence/03_silver.html`](docs/evidence/03_silver.html) | Full notebook code and cell outputs from real Databricks runs (incremental load with watermark advance; Silver MERGE run) |
+| **Phase 3 screen recording, about 5 minutes, no audio** (narrated live at the viva) | https://youtu.be/XSpj7pWZU_k (unlisted) | A fresh NVD window and KEV catalog fetched on the laptop and uploaded to the landing volume; the Job `vulnpulse_pipeline` run end to end with those folders (Bronze → Silver → Gold, four green tasks); the Gold task output with scope, inserted and updated counts; the Spark UI DAG of the `fact_cve_product` MERGE; Power BI **Refresh** pulling the new rows into the dashboard |
+| **Phase 2 screen recording, about 5 minutes, no audio** (narrated live at the viva; the sequence is listed in the next column) | https://youtu.be/Q1Pq-MEYE0o (unlisted) | Explicit `StructType` schemas in `src/vulnpulse/schemas/`; a live BACKFILL run of `01_bronze_nvd` from a landing folder, watermark untouched; `03_silver` re-run on unchanged Bronze with inserted 0 / updated 0 and row count equal to distinct CVEs; schema drift (`vendorComments` detected in the 2020 feed, quarantine rows and a string CVSS score cast in `99_failure_drills`); the `pipeline_execution_logs` table with successes and failures |
+| **Notebook exports with outputs** | [`docs/evidence/01_bronze_nvd.html`](docs/evidence/01_bronze_nvd.html), [`docs/evidence/03_silver.html`](docs/evidence/03_silver.html), `docs/evidence/job_807530551161428_*.html` | Full notebook code and cell outputs from real Databricks runs (incremental load with watermark advance; Silver MERGE run; the four tasks of a green Job run) |
+| **Final report** | [`docs/report/VulnPulse_Phase3_Report.pdf`](docs/report/VulnPulse_Phase3_Report.pdf) | Architecture diagram, data models, decision log, Spark DAG analysis, FinOps evaluation, evidence index |
 | **Audit exports and screenshots** | [`docs/EVIDENCE.md`](docs/EVIDENCE.md) and [`docs/evidence/`](docs/evidence/) | Milestone table with batch ids and row counts, CSV exports of `pipeline_execution_logs`, screenshots per milestone, failure drills, observed schema drift, and the incidents met on the way (no outbound internet on Free Edition serverless; Unity Catalog table ownership between teammates) |
 
 Everything in the table can also be reproduced by following the Execution Guide above.
@@ -531,7 +544,7 @@ Everything in the table can also be reproduced by following the Execution Guide 
 
 - **Phase 1 (Completed):** Proposal document, domain and source identification, sample payloads, Medallion architecture model, FinOps plan, and repository initialization.
 - **Phase 2 (Done, due 10 Oct 2026):** Raw-to-Bronze for NVD (full, incremental, backfill) and CISA KEV with explicit schemas, audit logging and watermarks. Bronze-to-Silver with casting, dedup + `MERGE INTO`, quarantine, schema-drift logging and audit for both sources.
-- **Phase 3 (In progress, due 24 Oct 2026):** Gold star schema (5 dimensions, 3 facts, watchlist view) with PK/FK constraints and liquid clustering, watermark-driven incremental Gold refresh, Databricks Job linking Bronze → Silver → Gold (green run 17 Oct), OPTIMIZE measurement: done. Product and CWE arms of the star, ER document and Power BI dashboard: done (G6, G7). Final architecture and FinOps report: in progress. Plan and decision log: [`docs/planning/PHASE3_PLAN.md`](docs/planning/PHASE3_PLAN.md); requirements: [`docs/requirements/phase3.txt`](docs/requirements/phase3.txt).
+- **Phase 3 (Done, due 24 Oct 2026):** Gold star schema (5 dimensions, 3 facts, watchlist view) with PK/FK constraints and liquid clustering, watermark-driven incremental Gold refresh, Databricks Job linking Bronze → Silver → Gold, OPTIMIZE measurement, product and CWE arms of the star, ER document, Power BI dashboard (G1 to G7), a final end-to-end run with DAG capture and dashboard refresh (G8), and the architecture and FinOps report in `docs/report/`. Plan and decision log: [`docs/planning/PHASE3_PLAN.md`](docs/planning/PHASE3_PLAN.md); requirements: [`docs/requirements/phase3.txt`](docs/requirements/phase3.txt).
 
 ---
 
