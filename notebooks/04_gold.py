@@ -348,19 +348,20 @@ display(
 display(
     spark.sql(
         f"""
-        SELECT v.vendor, count(DISTINCT f.cve_id) AS cves, sum(f.is_exploited) AS exploited
+        SELECT v.vendor, count(DISTINCT f.cve_id) AS cves,
+               count(DISTINCT CASE WHEN f.is_exploited = 1 THEN f.cve_id END) AS exploited_cves
         FROM {GOLD}.fact_cve_product f
         JOIN {GOLD}.dim_vendor_product v ON v.vendor_product_key = f.vendor_product_key
-        GROUP BY v.vendor ORDER BY exploited DESC, cves DESC LIMIT 10
+        GROUP BY v.vendor ORDER BY exploited_cves DESC, cves DESC LIMIT 10
         """
     )
 )
 display(
     spark.sql(
         f"""
-        SELECT c.cwe_id, count(*) AS cves, sum(f.is_exploited) AS exploited
+        SELECT c.cwe_id, count(*) AS cves, sum(f.is_exploited) AS exploited_cves
         FROM {GOLD}.fact_cve_cwe f JOIN {GOLD}.dim_cwe c ON c.cwe_key = f.cwe_key
-        GROUP BY c.cwe_id ORDER BY exploited DESC, cves DESC LIMIT 10
+        GROUP BY c.cwe_id ORDER BY exploited_cves DESC, cves DESC LIMIT 10
         """
     )
 )
